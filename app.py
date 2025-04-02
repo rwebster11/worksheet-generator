@@ -76,6 +76,27 @@ def extract_video_id(url):
             return match.group(1) # Return the first capture group (the ID)
     return None # Return None if no match found
 
+def create_comprehension_prompt(transcript_text, num_questions=5):
+    """Creates the prompt for Claude to generate comprehension questions from a transcript."""
+    prompt = f"""You are an expert educator. Based on the following video transcript, please generate {num_questions} insightful comprehension questions that test understanding of the key information presented.
+
+**Instructions for Questions:**
+1.  Ensure questions cover different aspects of the transcript (e.g., main ideas, specific details, inferences if possible).
+2.  Phrase questions clearly and concisely.
+3.  The questions should be suitable for someone who has just watched the video (assume context from the transcript).
+4.  Do NOT provide the answers to the questions.
+5.  Format the output as a numbered list.
+6.  Output ONLY the numbered list of questions, nothing else (no preamble like "Here are the questions:").
+
+**Video Transcript:**
+--- START TRANSCRIPT ---
+{transcript_text}
+--- END TRANSCRIPT ---
+
+**Comprehension Questions:**
+"""
+    return prompt
+
 # --- Route to Serve the Frontend HTML ---
 @app.route('/')
 def serve_index():
