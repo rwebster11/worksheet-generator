@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Worksheet Generator</title>
+    <style>
+        /* Basic styling for clarity */
+        body { font-family: sans-serif; padding: 20px; }
+        label { display: block; margin-bottom: 5px; }
+        input[type="text"], select { width: 300px; padding: 8px; margin-bottom: 15px; box-sizing: border-box; /* Include padding in width */ } /* Added select styling */
+        button { padding: 10px 15px; cursor: pointer; margin-bottom: 15px;} /* Added margin to button */
+        #worksheetOutput { margin-top: 20px; border: 1px solid #ccc; padding: 15px; white-space: pre-wrap; /* Preserve line breaks */ background-color: #f9f9f9; min-height: 100px;}
+        .loading { font-style: italic; color: grey; }
+    </style>
+</head>
+<body>
+    <h1>AI Worksheet Generator (Gap-Fill)</h1>
+
+    <div>
+        <label for="topicInput">Enter Topic:</label>
+        <input type="text" id="topicInput" placeholder="e.g., Photosynthesis, Solar System">
+    </div>
+
+    <!-- *** NEW SECTION FOR GRADE LEVEL DROPDOWN - INSERTED HERE *** -->
+    <div>
+        <label for="gradeLevelSelect">Grade Level:</label>
+        <select id="gradeLevelSelect" name="grade_level">
+            <option value="primary school">Elementary School</option>
+            <option value="middle school" selected>Middle School</option> <!-- Default -->
+            <option value="high school">High School</option>
+            <option value="university">University</option>
+            <option value="general adult">General Adult</option>
+        </select>
+    </div>
+    <!-- *** END OF NEW SECTION *** -->
+
+    <button id="generateButton">Generate Worksheet</button>
+
+    <h2>Generated Worksheet:</h2>
+    <div id="worksheetOutput">
+        <!-- AI generated content will appear here -->
+        Enter a topic and click Generate.
+    </div>
+
+    <!-- *** UPDATED JAVASCRIPT SECTION *** -->
+   <script>
+    const topicInput = document.getElementById('topicInput');
+    const gradeLevelSelect = document.getElementById('gradeLevelSelect'); // Get the dropdown
+    const generateButton = document.getElementById('generateButton');
+    const worksheetOutput = document.getElementById('worksheetOutput');
+
+    generateButton.addEventListener('click', () => {
+        const topic = topicInput.value.trim();
+        const gradeLevel = gradeLevelSelect.value; // Get the selected grade level
+
+        // Basic validation: Check if topic is empty
+        if (topic === '') {
+            worksheetOutput.innerHTML = '<p style="color: red;">Please enter a topic.</p>';
+            return; // Stop the function here
+        }
+
+        worksheetOutput.innerHTML = '<p>Generating worksheet... Please wait.</p>'; // Loading message
+
+        // --- Make API call ---
+        fetch('/generate_worksheet', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            // Send both topic and grade_level
+            body: JSON.stringify({
+                topic: topic,
+                grade_level: gradeLevel // Use snake_case for consistency with Python
+             })
+        })
+        .then(response => {
+            if (!response.ok) {
+                // Try to get error message from backend JSON response
+                return response.json().then(errData => {
+                    // Throw an error that includes the backend message
+                    throw new Error(errData.message || `HTTP error! Status: ${response.status}`);
+                });
+            }
+            return response.json(); // Parse successful JSON response
+        })
+        .then(data => {
+            console.log('Data received:', data); // Log received data for debugging
+            if (data.status === 'success' && data.worksheet_content) {
+                // Display the raw content for now (Improvement is Option 1)
+                // Replace newline characters with <br> tags for HTML display
+                const formattedContent = data.worksheet_content.replace(/\n/g, '<br>');
+                worksheetOutput.innerHTML = formattedContent;
+            } else {
+                // Handle cases where status is not 'success' or content is missing
+                worksheetOutput.innerHTML = `<p style="color: red;">Error: ${data.message || 'Failed to generate worksheet. No content received.'}</p>`;
+            }
+        })
+        .catch(error => {
+            console.error('Fetch Error:', error);
+            // Display the detailed error message caught (could be from throw new Error or network issue)
+            worksheetOutput.innerHTML = `<p style="color: red;">Error: ${error.message || 'Could not connect to the server or process the request.'}</p>`;
+        });
+    });
+</script>
+    <!-- *** REMOVED EXTRA </script> TAG FROM HERE *** -->
+</body>
+</html>
