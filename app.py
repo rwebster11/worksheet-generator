@@ -61,6 +61,21 @@ Worksheet:
     return prompt
     # Removed the extra 'return prompt' that was here
 
+def extract_video_id(url):
+    """Extracts the YouTube video ID from various URL formats."""
+    # Regex patterns to match standard YouTube URLs and short URLs
+    patterns = [
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})',  # Standard URL
+        r'(?:https?:\/\/)?(?:www\.)?youtu\.be\/([a-zA-Z0-9_-]{11})',          # Short URL
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})', # Embed URL
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/v\/([a-zA-Z0-9_-]{11})',     # V URL
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1) # Return the first capture group (the ID)
+    return None # Return None if no match found
+
 # --- Route to Serve the Frontend HTML ---
 @app.route('/')
 def serve_index():
