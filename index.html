@@ -5,104 +5,416 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Worksheet Generator</title>
     <style>
-        /* Basic styling for clarity */
-        body { font-family: sans-serif; padding: 20px; }
-        label { display: block; margin-bottom: 5px; }
-        input[type="text"], select { width: 300px; padding: 8px; margin-bottom: 15px; box-sizing: border-box; /* Include padding in width */ } /* Added select styling */
-        button { padding: 10px 15px; cursor: pointer; margin-bottom: 15px;} /* Added margin to button */
-        #worksheetOutput { margin-top: 20px; border: 1px solid #ccc; padding: 15px; white-space: pre-wrap; /* Preserve line breaks */ background-color: #f9f9f9; min-height: 100px;}
+        /* Styles for structured output */
+        .worksheet-section { border: 1px solid #e0e0e0; padding: 10px 15px; margin-bottom: 15px; background-color: #fff; border-radius: 4px; }
+        .worksheet-section h3 { margin-top: 0; margin-bottom: 10px; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+        .editable-content { outline: 1px dashed blue; background-color: #f0f8ff; cursor: text; padding: 2px 4px; min-height: 1em; border-radius: 2px;}
+        #worksheetOutput p, #worksheetOutput li { margin-bottom: 0.5em; }
+        /* Basic styling */
+        body { font-family: sans-serif; padding: 20px; background-color: #f0f0f0; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="text"], input[type="url"], input[type="number"], select { width: 100%; max-width: 450px; padding: 8px; margin-bottom: 15px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px;}
+        button { padding: 10px 15px; cursor: pointer; margin-bottom: 15px; margin-left: 5px; /* Added small left margin */ border: none; border-radius: 4px; background-color: #007bff; color: white; font-size: 1em;}
+        button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        button#toggleEditButton { background-color: #ffc107; color: black; }
+        button#saveButton { background-color: #28a745; } /* Green for save */
+        #worksheetOutput { margin-top: 20px; border: 1px solid #ccc; padding: 15px; white-space: pre-wrap; background-color: #fdfdfd; min-height: 150px; border-radius: 4px;}
         .loading { font-style: italic; color: grey; }
+        .hidden { display: none; }
+        fieldset { border: 1px solid #ccc; padding: 15px; margin-bottom: 15px; border-radius: 4px; background-color: #fff;}
+        legend { font-weight: bold; padding: 0 5px; }
+        h1, h2 { color: #333; }
+        /* Style radio labels */
+        fieldset div label { display: inline; font-weight: normal; margin-left: 5px; }
     </style>
 </head>
 <body>
-    <h1>AI Worksheet Generator (Gap-Fill)</h1>
+    <h1>AI Worksheet Generator</h1>
 
-    <div>
-        <label for="topicInput">Enter Topic:</label>
-        <input type="text" id="topicInput" placeholder="e.g., Photosynthesis, Solar System">
+    <!-- Mode Selection -->
+    <fieldset>
+        <legend>Select Generator Type</legend>
+        <div>
+            <input type="radio" id="modeGapFill" name="generatorMode" value="gapFill" checked>
+            <label for="modeGapFill">Gap-Fill from Topic</label>
+        </div>
+        <div>
+            <input type="radio" id="modeYoutube" name="generatorMode" value="youtube">
+            <label for="modeYoutube">Comprehension from YouTube URL</label>
+        </div>
+    </fieldset>
+
+    <!-- Inputs for Gap Fill -->
+    <div id="gapFillInputs">
+        <fieldset>
+            <legend>Gap-Fill Options</legend>
+            <div>
+                <label for="topicInput">Enter Topic:</label>
+                <input type="text" id="topicInput" placeholder="e.g., Photosynthesis, Solar System">
+            </div>
+            <div>
+                <label for="gradeLevelSelect">Grade Level:</label>
+                <select id="gradeLevelSelect" name="grade_level">
+                    <option value="elementary school">Elementary School</option>
+                    <option value="middle school" selected>Middle School</option>
+                    <option value="high school">High School</option>
+                    <option value="university">University</option>
+                    <option value="general adult">General Adult</option>
+                </select>
+            </div>
+        </fieldset>
     </div>
 
-    <!-- *** NEW SECTION FOR GRADE LEVEL DROPDOWN - INSERTED HERE *** -->
-    <div>
-        <label for="gradeLevelSelect">Grade Level:</label>
-        <select id="gradeLevelSelect" name="grade_level">
-            <option value="primary school">Elementary School</option>
-            <option value="middle school" selected>Middle School</option> <!-- Default -->
-            <option value="high school">High School</option>
-            <option value="university">University</option>
-            <option value="general adult">General Adult</option>
-        </select>
+    <!-- Inputs for YouTube Comprehension -->
+    <div id="youtubeInputs" class="hidden">
+        <fieldset>
+            <legend>YouTube Comprehension Options</legend>
+            <div>
+                <label for="youtubeUrlInput">Enter YouTube Video URL:</label>
+                <input type="url" id="youtubeUrlInput" placeholder="https://www.youtube.com/watch?v=...">
+            </div>
+            <div>
+                <label for="numQuestionsInput">Number of Questions (approx):</label>
+                <input type="number" id="numQuestionsInput" value="5" min="2" max="15">
+            </div>
+        </fieldset>
     </div>
-    <!-- *** END OF NEW SECTION *** -->
 
-    <button id="generateButton">Generate Worksheet</button>
+    <!-- Action Buttons -->
+    <button id="generateButton">Generate</button>
+    <!-- Buttons float right, appear after Generate -->
+    <button id="saveButton" style="float: right; background-color: #28a745;" disabled>Save to Library</button>
+    <button id="toggleEditButton" style="float: right;" disabled>Enable Editing</button>
 
-    <h2>Generated Worksheet:</h2>
+    <!-- Output Area -->
+    <h2 style="clear: both;">Generated Output:</h2>
     <div id="worksheetOutput">
-        <!-- AI generated content will appear here -->
-        Enter a topic and click Generate.
+        Select a generator type, enter details, and click Generate.
     </div>
 
-    <!-- *** UPDATED JAVASCRIPT SECTION *** -->
-   <script>
-    const topicInput = document.getElementById('topicInput');
-    const gradeLevelSelect = document.getElementById('gradeLevelSelect'); // Get the dropdown
-    const generateButton = document.getElementById('generateButton');
-    const worksheetOutput = document.getElementById('worksheetOutput');
 
-    generateButton.addEventListener('click', () => {
-        const topic = topicInput.value.trim();
-        const gradeLevel = gradeLevelSelect.value; // Get the selected grade level
+    <script>
+        // --- Get Element References (Grouped at Top) ---
+        const modeGapFillRadio = document.getElementById('modeGapFill');
+        const modeYoutubeRadio = document.getElementById('modeYoutube');
+        const gapFillInputsDiv = document.getElementById('gapFillInputs');
+        const youtubeInputsDiv = document.getElementById('youtubeInputs');
+        const topicInput = document.getElementById('topicInput');
+        const gradeLevelSelect = document.getElementById('gradeLevelSelect');
+        const youtubeUrlInput = document.getElementById('youtubeUrlInput');
+        const numQuestionsInput = document.getElementById('numQuestionsInput');
+        const generateButton = document.getElementById('generateButton');
+        const worksheetOutput = document.getElementById('worksheetOutput');
+        const toggleEditButton = document.getElementById('toggleEditButton'); // Only one declaration
+        const saveButton = document.getElementById('saveButton');             // Only one declaration
 
-        // Basic validation: Check if topic is empty
-        if (topic === '') {
-            worksheetOutput.innerHTML = '<p style="color: red;">Please enter a topic.</p>';
-            return; // Stop the function here
+        // --- State Variables ---
+        let isEditingEnabled = false; // Only one declaration
+
+        // --- Helper Functions ---
+
+        // Function to handle switching between input modes
+        function handleModeChange() {
+            if (modeYoutubeRadio.checked) {
+                gapFillInputsDiv.classList.add('hidden');
+                youtubeInputsDiv.classList.remove('hidden');
+            } else { // Gap Fill is checked
+                gapFillInputsDiv.classList.remove('hidden');
+                youtubeInputsDiv.classList.add('hidden');
+            }
+             // Reset output and buttons on mode change
+             worksheetOutput.innerHTML = 'Enter details for the selected mode and click Generate.';
+             toggleEditButton.disabled = true;
+             saveButton.disabled = true;
+             toggleEditButton.textContent = 'Enable Editing';
+             if (isEditingEnabled) { // If editing was enabled, reset styles
+                 worksheetOutput.style.border = '1px solid #ccc';
+                 isEditingEnabled = false;
+             }
         }
 
-        worksheetOutput.innerHTML = '<p>Generating worksheet... Please wait.</p>'; // Loading message
+        // Function to parse Gap-Fill text
+        function parseAndStructureGapFill(rawText) {
+            // console.log("Parsing Gap Fill Text:", rawText.substring(0, 100) + "...");
+            const keyIdentifier = "Answer Key:";
+            // Use regex for case-insensitive match at the start of a line (^ with 'm' flag)
+            const keyIndex = rawText.search(new RegExp(`^${keyIdentifier.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}\\s*`, 'im'));
+            let contentPart = rawText;
+            let keyPart = "";
+            let structuredHtml = "";
 
-        // --- Make API call ---
-        fetch('/generate_worksheet', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            // Send both topic and grade_level
-            body: JSON.stringify({
-                topic: topic,
-                grade_level: gradeLevel // Use snake_case for consistency with Python
-             })
-        })
-        .then(response => {
-            if (!response.ok) {
-                // Try to get error message from backend JSON response
-                return response.json().then(errData => {
-                    // Throw an error that includes the backend message
-                    throw new Error(errData.message || `HTTP error! Status: ${response.status}`);
-                });
-            }
-            return response.json(); // Parse successful JSON response
-        })
-        .then(data => {
-            console.log('Data received:', data); // Log received data for debugging
-            if (data.status === 'success' && data.worksheet_content) {
-                // Display the raw content for now (Improvement is Option 1)
-                // Replace newline characters with <br> tags for HTML display
-                const formattedContent = data.worksheet_content.replace(/\n/g, '<br>');
-                worksheetOutput.innerHTML = formattedContent;
+            if (keyIndex !== -1) {
+                contentPart = rawText.substring(0, keyIndex).trim();
+                keyPart = rawText.substring(keyIndex + keyIdentifier.length).trim();
+                // console.log("Split into Content / Key parts");
             } else {
-                // Handle cases where status is not 'success' or content is missing
-                worksheetOutput.innerHTML = `<p style="color: red;">Error: ${data.message || 'Failed to generate worksheet. No content received.'}</p>`;
+                console.warn("Could not find 'Answer Key:' separator. Displaying raw text.");
+                return `<div class="worksheet-section"><h3>Worksheet (Format Issue?)</h3><div>${contentPart.replace(/\n/g, '<br>')}</div></div>`;
             }
-        })
-        .catch(error => {
-            console.error('Fetch Error:', error);
-            // Display the detailed error message caught (could be from throw new Error or network issue)
-            worksheetOutput.innerHTML = `<p style="color: red;">Error: ${error.message || 'Could not connect to the server or process the request.'}</p>`;
+
+            const sentences = contentPart.split('\n').filter(line => line.trim() !== '');
+            structuredHtml += '<div class="worksheet-section" id="gap-fill-sentences"><h3>Worksheet Sentences</h3>';
+            sentences.forEach((sentence, index) => {
+                structuredHtml += `<p data-index="${index}">${sentence.trim()}</p>`;
+            });
+            structuredHtml += '</div>';
+
+            const answers = keyPart.split('\n').filter(line => line.trim() !== '');
+            structuredHtml += '<div class="worksheet-section" id="gap-fill-answers"><h3>Answer Key</h3>';
+            structuredHtml += '<ol>';
+            answers.forEach((answerLine) => {
+                const cleanedAnswer = answerLine.replace(/^\d+\.\s*/, '').trim();
+                if (cleanedAnswer) {
+                    structuredHtml += `<li>${cleanedAnswer}</li>`;
+                }
+            });
+            structuredHtml += '</ol></div>';
+
+            // console.log("Finished parsing Gap Fill.");
+            return structuredHtml;
+        }
+
+        // Function to parse Comprehension Questions text
+        function parseAndStructureQuestions(rawText) {
+            // console.log("Parsing Questions Text:", rawText.substring(0, 100) + "...");
+            const questions = rawText.split('\n').filter(line => line.trim() !== '');
+            let structuredHtml = '<div class="worksheet-section" id="comprehension-questions"><h3>Comprehension Questions</h3>';
+            structuredHtml += '<ol>';
+            questions.forEach((questionLine) => {
+                const cleanedQuestion = questionLine.replace(/^\d+\.\s*/, '').trim();
+                if (cleanedQuestion) {
+                    structuredHtml += `<li>${cleanedQuestion}</li>`;
+                }
+            });
+            structuredHtml += '</ol></div>';
+
+            // console.log("Finished parsing Questions.");
+            return structuredHtml;
+        }
+
+        // --- Event Listeners ---
+
+        // Listener for Mode Radio Buttons
+        modeGapFillRadio.addEventListener('change', handleModeChange);
+        modeYoutubeRadio.addEventListener('change', handleModeChange);
+
+        // Listener for Generate Button
+        generateButton.addEventListener('click', async () => {
+            let fetchUrl = '';
+            let payload = {};
+            let isValid = true;
+            const selectedMode = document.querySelector('input[name="generatorMode"]:checked').value;
+
+            // Reset state and disable buttons
+            worksheetOutput.innerHTML = '<div class="loading">Generating... Please wait.</div>';
+            generateButton.disabled = true;
+            toggleEditButton.disabled = true;
+            saveButton.disabled = true;
+            toggleEditButton.textContent = 'Enable Editing'; // Reset button text
+             if (isEditingEnabled) { // Reset editing state if active
+                 worksheetOutput.style.border = '1px solid #ccc';
+                 isEditingEnabled = false;
+             }
+
+
+            // --- Prepare payload based on mode & Validate ---
+            if (selectedMode === 'gapFill') {
+                const topic = topicInput.value.trim();
+                const gradeLevel = gradeLevelSelect.value;
+                if (!topic) {
+                    worksheetOutput.innerHTML = '<p style="color: red;">Please enter a topic.</p>';
+                    isValid = false;
+                } else {
+                    fetchUrl = '/generate_worksheet';
+                    payload = { topic: topic, grade_level: gradeLevel };
+                }
+            } else { // youtube mode
+                const youtubeUrl = youtubeUrlInput.value.trim();
+                const numQuestions = parseInt(numQuestionsInput.value, 10) || 5;
+
+                if (!youtubeUrl) {
+                    worksheetOutput.innerHTML = '<p style="color: red;">Please enter a YouTube URL.</p>';
+                    isValid = false;
+                } else if (!youtubeUrl.toLowerCase().includes('youtube.com/') && !youtubeUrl.toLowerCase().includes('youtu.be/')) {
+                     worksheetOutput.innerHTML = '<p style="color: red;">Please enter a valid YouTube URL.</p>';
+                     isValid = false;
+                } else if (numQuestions < 2 || numQuestions > 20) {
+                     worksheetOutput.innerHTML = '<p style="color: red;">Please enter a number of questions between 2 and 20.</p>';
+                     isValid = false;
+                } else {
+                    fetchUrl = '/generate_comprehension';
+                    payload = { youtube_url: youtubeUrl, num_questions: numQuestions };
+                }
+            }
+
+            // If validation failed, re-enable generate button and exit
+            if (!isValid) {
+                generateButton.disabled = false;
+                // Keep Edit and Save disabled
+                return;
+            }
+
+            // --- Make API Call ---
+            try {
+                console.log(`Fetching ${fetchUrl} with payload:`, payload);
+                const response = await fetch(fetchUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+                console.log('Raw data received from backend:', data);
+
+                if (!response.ok) {
+                    throw new Error(data.message || `HTTP error! status: ${response.status}`);
+                }
+
+                if (data.status === 'success') {
+                    let rawContent = '';
+                    let outputHtml = '';
+
+                    // console.log("Attempting to parse content for mode:", selectedMode);
+
+                    if (selectedMode === 'gapFill' && data.worksheet_content) {
+                        rawContent = data.worksheet_content;
+                        // console.log("Raw Gap Fill Content:", rawContent ? rawContent.substring(0,150)+"..." : "N/A");
+                        outputHtml = parseAndStructureGapFill(rawContent);
+                    } else if (selectedMode === 'youtube' && data.comprehension_questions) {
+                        rawContent = data.comprehension_questions;
+                        // console.log("Raw Questions Content:", rawContent ? rawContent.substring(0,150)+"..." : "N/A");
+                        outputHtml = parseAndStructureQuestions(rawContent);
+                    } else {
+                         console.error("Success status but missing expected content key.", data);
+                         throw new Error('Generation succeeded but expected content key was not found.');
+                    }
+
+                    // console.log("Generated HTML Structure:", outputHtml ? outputHtml.substring(0,200)+"..." : "N/A");
+
+                    // Display the structured HTML
+                    worksheetOutput.innerHTML = outputHtml;
+
+                    // Enable Edit and Save buttons on success
+                    toggleEditButton.disabled = false;
+                    saveButton.disabled = false;
+                    isEditingEnabled = false; // Ensure editing starts disabled
+                    toggleEditButton.textContent = 'Enable Editing';
+
+                } else {
+                     console.error("Backend returned status !== 'success'", data);
+                     throw new Error(data.message || 'Generation failed on the server.');
+                }
+
+            } catch (error) {
+                console.error('Error during generation fetch/processing:', error);
+                worksheetOutput.innerHTML = `<p style="color: red;">Error: ${error.message}. Check console for details.</p>`;
+                // Keep Edit and Save disabled on error
+                toggleEditButton.disabled = true;
+                saveButton.disabled = true;
+            } finally {
+                // Always re-enable Generate button
+                generateButton.disabled = false;
+            }
         });
-    });
-</script>
-    <!-- *** REMOVED EXTRA </script> TAG FROM HERE *** -->
+
+
+        // Listener for Edit Button
+        toggleEditButton.addEventListener('click', () => {
+            isEditingEnabled = !isEditingEnabled;
+            const contentElements = worksheetOutput.querySelectorAll('.worksheet-section p, .worksheet-section li');
+
+            if (isEditingEnabled) {
+                toggleEditButton.textContent = 'Disable Editing'; // Simpler text
+                saveButton.disabled = true; // Disable saving while editing
+                contentElements.forEach(el => {
+                    el.contentEditable = true;
+                    el.classList.add('editable-content');
+                });
+                worksheetOutput.style.border = '2px solid blue';
+                console.log("Editing enabled.");
+            } else {
+                toggleEditButton.textContent = 'Enable Editing';
+                saveButton.disabled = false; // Re-enable saving after editing
+                contentElements.forEach(el => {
+                    el.contentEditable = false;
+                    el.classList.remove('editable-content');
+                });
+                worksheetOutput.style.border = '1px solid #ccc';
+                console.log("Editing disabled.");
+            }
+        });
+
+
+        // Listener for Save Button
+        saveButton.addEventListener('click', async () => {
+            if (isEditingEnabled) { // Should not happen if button is disabled, but double-check
+                alert("Please disable editing before saving.");
+                return;
+            }
+
+            const selectedMode = document.querySelector('input[name="generatorMode"]:checked').value;
+            let source_topic = null;
+            let source_url = null;
+            let grade_level = null;
+
+            if (selectedMode === 'gapFill') {
+                source_topic = topicInput.value.trim();
+                grade_level = gradeLevelSelect.value;
+                 if (!source_topic) { alert("Cannot save without topic."); return; } // Add validation
+            } else { // youtube mode
+                source_url = youtubeUrlInput.value.trim();
+                grade_level = "mixed"; // Placeholder - consider adding grade selector for YT later?
+                 if (!source_url) { alert("Cannot save without YouTube URL."); return; } // Add validation
+            }
+
+            const content_html = worksheetOutput.innerHTML;
+            // Check if content is meaningful (not initial message or loading)
+            if (!content_html || content_html.includes('click Generate') || content_html.includes('<div class="loading">')) {
+                alert("Cannot save empty or placeholder content.");
+                return;
+            }
+
+            const payload = {
+                item_type: selectedMode,
+                source_topic: source_topic,
+                source_url: source_url,
+                grade_level: grade_level,
+                content_html: content_html
+            };
+
+            console.log("Saving payload:", payload);
+
+            saveButton.disabled = true;
+            saveButton.textContent = 'Saving...';
+            try {
+                const response = await fetch('/save_item', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (!response.ok || result.status !== 'success') {
+                     throw new Error(result.message || `HTTP error! status: ${response.status}`);
+                }
+
+                alert("Item saved successfully!");
+                saveButton.textContent = 'Saved!'; // Indicate success
+                // Consider maybe disabling Generate/Edit after save until mode change? Or leave enabled.
+
+            } catch (error) {
+                console.error("Error saving item:", error);
+                alert(`Error saving item: ${error.message}`);
+                saveButton.textContent = 'Save to Library'; // Reset text
+                saveButton.disabled = false; // Re-enable on error
+            }
+        });
+
+
+        // --- Initialization ---
+        // Set initial visibility based on default checked radio
+        handleModeChange();
+
+    </script>
 </body>
 </html>

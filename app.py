@@ -1,5 +1,9 @@
 import os
 import anthropic
+# Near other imports
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime, timezone # Added timezone for UTC awareness
+import os # Make sure os is imported if not already
 from flask import Flask, request, jsonify, send_from_directory
 from dotenv import load_dotenv
 import traceback # Import traceback for detailed error logging
@@ -10,6 +14,42 @@ load_dotenv()
 
 # Initialize the Flask application
 app = Flask(__name__)
+
+# --- Database Configuration ---
+# Get the absolute path of the directory where app.py is located
+basedir = os.path.abspath(os.path.dirname(__file__))
+# Define the path for the SQLite database file
+db_path = os.path.join(basedir, 'worksheet_library.db')
+# Configure the database URI
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
+# Disable modification tracking, it's not needed and uses extra memory
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# --- End Database Configuration ---
+
+# Initialize the SQLAlchemy extension
+db = SQLAlchemy(app)
+# --- Database Model Definition ---
+class GeneratedItem(db.Model):
+    __tablename__ = 'generated_items' # Explicit table name (optional, but good practice)
+
+    id = db.Column(db.Integer, primary_key=True) # Auto-incrementing primary key
+    item_type = db.Column(db.String(50), nullable=False) # 'gap_fill', 'youtube_comprehension', etc.
+    source_topic = db.Column(db.String(250), nullable=True) # Topic used for generation (nullable for non-topic items)
+    source_url = db.Column(db.String(500), nullable=True) # URL used for generation (nullable for topic items)
+    grade_level = db.Column(db.String(50), nullable=False) # e.g., 'middle school'
+    content_html = db.Column(db.Text, nullable=False) # The generated/edited HTML content
+    # Use timezone.utc for database consistency
+    creation_date = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    last_modified_date = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    # Potential future fields:
+    # tags = db.Column(db.String(200), nullable=True) # Comma-separated tags? Or a separate table later.
+    # description = db.Column(db.String(500), nullable=True) # User-added description
+
+    def __repr__(self):
+        # Helpful representation for debugging
+        return f'<GeneratedItem id={self.id} type={self.item_type} topic="{self.source_topic}" url="{self.source_url}">'
+
+# --- End Database Model Definition ---
 
 # Initialize the Anthropic Client (More robust initialization)
 try:
@@ -59,7 +99,6 @@ Topic: {topic}
 Worksheet:
 """
     return prompt
-    # Removed the extra 'return prompt' that was here
 
 def extract_video_id(url):
     """Extracts the YouTube video ID from various URL formats."""
@@ -78,6 +117,7 @@ def extract_video_id(url):
 
 def create_comprehension_prompt(transcript_text, num_questions=5):
     """Creates the prompt for Claude to generate comprehension questions from a transcript."""
+    # Use the num_questions variable in the prompt f-string
     prompt = f"""You are an expert educator. Based on the following video transcript, please generate {num_questions} insightful comprehension questions that test understanding of the key information presented.
 
 **Instructions for Questions:**
@@ -93,7 +133,7 @@ def create_comprehension_prompt(transcript_text, num_questions=5):
 {transcript_text}
 --- END TRANSCRIPT ---
 
-**Comprehension Questions:**
+**{num_questions} Comprehension Questions:**
 """
     return prompt
 
@@ -103,6 +143,60 @@ def serve_index():
     """Serves the index.html file."""
     print("Serving index.html")
     return send_from_directory('.', 'index.html')
+# --- Route to Save Generated/Edited Item ---
+@app.route('/save_item', methods=['POST'])
+def save_item_route():
+    """Handles POST requests to save an item to the database."""
+    print("Received request at /save_item")
+
+    if not request.is_json:
+        print("Error: Request is not JSON for /save_item")
+        return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+
+    data = request.get_json()
+
+    # --- Extract data from payload ---
+    item_type = data.get('item_type')
+    source_topic = data.get('source_topic')
+    source_url = data.get('source_url')
+    grade_level = data.get('grade_level')
+    content_html = data.get('content_html')
+
+    # --- Basic Validation ---
+    if not item_type or not grade_level or not content_html:
+         return jsonify({'status': 'error', 'message': 'Missing required fields: item_type, grade_level, content_html'}), 400
+    if item_type == 'gapFill' and not source_topic:
+         return jsonify({'status': 'error', 'message': 'Missing source_topic for gapFill item'}), 400
+    if item_type == 'youtube' and not source_url:
+         return jsonify({'status': 'error', 'message': 'Missing source_url for youtube item'}), 400
+
+    print(f"Attempting to save item: type={item_type}, topic={source_topic}, url={source_url}, grade={grade_level}, html_len={len(content_html or '')}")
+
+    try:
+        # --- Create Database Record ---
+        new_item = GeneratedItem(
+            item_type=item_type,
+            source_topic=source_topic,
+            source_url=source_url,
+            grade_level=grade_level,
+            content_html=content_html
+            # Timestamps are handled by default/onupdate
+        )
+
+        # --- Add to session and commit ---
+        db.session.add(new_item)
+        db.session.commit()
+
+        print(f"Successfully saved item with ID: {new_item.id}")
+        return jsonify({'status': 'success', 'message': 'Item saved successfully!', 'item_id': new_item.id})
+
+    except Exception as e:
+        db.session.rollback() # Rollback transaction on error
+        print(f"Error saving item to database: {e}")
+        print(traceback.format_exc())
+        return jsonify({'status': 'error', 'message': f'Database error: {e}'}), 500
+
+# --- End of Save Route ---
 
 # --- Route to Handle Worksheet Generation ---
 @app.route('/generate_worksheet', methods=['POST'])
@@ -119,27 +213,24 @@ def generate_worksheet_route():
         return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
 
     try:
-        # Consistently indent all lines inside the 'try' block
         data = request.get_json()
-        # Use consistent 4-space indentation for this block
         topic = data.get('topic')
         grade_level = data.get('grade_level', 'middle school') # Default if missing
 
-        # Log received data (Corrected indentation)
+        # Log received data
         print(f"Received data: {data}")
 
         if not topic:
-            # Indent block under 'if' consistently
             print("Error: 'topic' missing in request data.")
             return jsonify({'status': 'error', 'message': 'Missing "topic" in request data'}), 400
 
-        # Log the topic and grade level correctly (Corrected indentation and removed extra parenthesis)
+        # Log the topic and grade level correctly
         print(f"Received topic: '{topic}', Grade Level: '{grade_level}'")
 
-        # Create the prompt (Corrected indentation)
+        # Create the prompt
         prompt_content = create_gap_fill_prompt(topic, grade_level)
 
-        # --- Call Anthropic API --- (Corrected indentation)
+        # --- Call Anthropic API ---
         print(f"Sending request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
         message = client.messages.create(
             model=ANTHROPIC_MODEL_NAME,
@@ -154,20 +245,18 @@ def generate_worksheet_route():
         )
         print("Received response from Anthropic API.")
 
-        # Extract the generated text (Corrected indentation)
+        # Extract the generated text
         generated_text = ""
         if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
-            # Correctly indent line inside 'if'
             generated_text = message.content[0].text
         else:
-            # Correctly indent lines inside 'else'
             print(f"Warning: Unexpected API response structure or empty content. Response: {message}")
             return jsonify({'status': 'error', 'message': 'Failed to parse content from API response.'}), 500
 
-        # Log content length (Corrected indentation)
+        # Log content length
         print(f"Generated content length: {len(generated_text)} characters")
 
-        # --- Return the Result to the Frontend --- (Corrected indentation)
+        # --- Return the Result to the Frontend ---
         return jsonify({
             'status': 'success',
             'worksheet_content': generated_text.strip()
@@ -175,35 +264,148 @@ def generate_worksheet_route():
 
     # --- Specific Error Handling for Anthropic API ---
     except anthropic.APIConnectionError as e:
-        # Correctly indent lines inside 'except'
         print(f"API Connection Error: {e}")
         return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
     except anthropic.RateLimitError as e:
-        # Correctly indent lines inside 'except'
         print(f"API Rate Limit Error: {e}")
         return jsonify({'status': 'error', 'message': 'Rate limit exceeded. Please try again later.'}), 429
     except anthropic.APIStatusError as e:
-        # Correctly indent lines inside 'except'
         print(f"API Status Error: Status Code: {e.status_code}, Response: {e.response}")
         error_message = f'AI service error (Status {e.status_code})'
         try:
-            # Indent lines inside nested 'try'
             error_details = e.response.json()
             error_message += f": {error_details.get('error', {}).get('message', e.response.text)}"
         except Exception:
-            # Indent line inside nested 'except'
             error_message += f": {e.response.text}"
-        # Ensure return is indented relative to the outer 'except'
         return jsonify({'status': 'error', 'message': error_message}), e.status_code
     # --- General Error Handling ---
     except Exception as e:
-        # Correctly indent lines inside 'except'
         print(f"An unexpected error occurred in /generate_worksheet: {e}")
         print(traceback.format_exc())
         return jsonify({'status': 'error', 'message': f'An internal server error occurred.'}), 500
 
+@app.route('/generate_comprehension', methods=['POST'])
+def generate_comprehension_route():
+    """Handles POST requests to generate comprehension questions from a YouTube URL."""
+    print("Received request at /generate_comprehension")
+
+    if client is None:
+        print("Error: Anthropic client not initialized.")
+        return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
+
+    if not request.is_json:
+        print("Error: Request is not JSON.")
+        return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+
+    try:
+        data = request.get_json()
+        youtube_url = data.get('youtube_url')
+        num_questions_req = data.get('num_questions', 5)  # Get value, default to 5
+        
+        try:
+            num_questions = int(num_questions_req)
+            if not 2 <= num_questions <= 20:  # Validate range (e.g., 2-20)
+                print(f"Error: Invalid number of questions requested: {num_questions}")
+                raise ValueError("Number of questions must be between 2 and 20.")
+        except (ValueError, TypeError):
+            print(f"Error: Invalid type or value for num_questions: {num_questions_req}")
+            return jsonify({'status': 'error', 'message': 'Invalid number of questions specified (must be an integer between 2 and 20).'}), 400
+
+        if not youtube_url:
+            return jsonify({'status': 'error', 'message': 'Missing "youtube_url" in request data'}), 400
+
+        # Log the number of questions requested
+        print(f"Received YouTube URL: {youtube_url}, Num Questions: {num_questions}")
+
+        # --- Extract Video ID ---
+        video_id = extract_video_id(youtube_url)
+        if not video_id:
+            print(f"Error: Could not extract Video ID from URL: {youtube_url}")
+            return jsonify({'status': 'error', 'message': f'Invalid YouTube URL format: {youtube_url}'}), 400
+        
+        print(f"Extracted Video ID: {video_id}")
+
+        # --- Get Transcript ---
+        transcript_text = ""
+        try:
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'en-US'])  # Prioritize English
+            # Combine transcript parts into a single string
+            transcript_text = " ".join([item['text'] for item in transcript_list])
+            print(f"Successfully fetched transcript, length: {len(transcript_text)} characters.")
+            if not transcript_text.strip():  # Check if transcript is empty after joining
+                print(f"Warning: Fetched transcript for {video_id} is empty.")
+                return jsonify({'status': 'error', 'message': 'Transcript found but it is empty.'}), 400
+                
+        except TranscriptsDisabled:
+            print(f"Error: Transcripts are disabled for video: {video_id}")
+            return jsonify({'status': 'error', 'message': 'Transcripts are disabled for this video.'}), 400
+        except NoTranscriptFound:
+            print(f"Error: No English transcript found for video: {video_id}")
+            return jsonify({'status': 'error', 'message': 'No English transcript found for this video.'}), 404
+        except Exception as e:  # Catch other potential errors from the library
+            print(f"Error fetching transcript for {video_id}: {e}")
+            print(traceback.format_exc())
+            return jsonify({'status': 'error', 'message': f'Could not fetch transcript: {e}'}), 500
+
+        # --- Generate Comprehension Questions Prompt ---
+        # Pass the validated num_questions to the prompt function
+        prompt_content = create_comprehension_prompt(transcript_text, num_questions)
+
+        # --- Call Anthropic API ---
+        print(f"Sending transcript to Anthropic API (Model: {ANTHROPIC_MODEL_NAME}, requesting {num_questions} questions)...")
+        message = client.messages.create(
+            model=ANTHROPIC_MODEL_NAME,
+            max_tokens=1000 + (num_questions * 50),  # Dynamically adjust tokens slightly based on question count
+            temperature=0.7,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt_content
+                }
+            ]
+        )
+        print("Received response from Anthropic API.")
+
+        # --- Extract Result ---
+        generated_questions = ""
+        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
+            generated_questions = message.content[0].text
+        else:
+            print(f"Warning: Unexpected API response structure or empty content. Response: {message}")
+            return jsonify({'status': 'error', 'message': 'Failed to parse questions from AI response.'}), 500
+
+        print(f"Generated Questions length: {len(generated_questions)} chars")
+
+        # --- Return Result ---
+        return jsonify({
+            'status': 'success',
+            'comprehension_questions': generated_questions.strip()
+        })
+
+    # --- Error Handling ---
+    except anthropic.APIConnectionError as e:
+        print(f"API Connection Error: {e}")
+        return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
+    except anthropic.RateLimitError as e:
+        print(f"API Rate Limit Error: {e}")
+        return jsonify({'status': 'error', 'message': 'Rate limit exceeded. Please try again later.'}), 429
+    except anthropic.APIStatusError as e:
+        print(f"API Status Error: Status Code: {e.status_code}, Response: {e.response}")
+        error_message = f'AI service error (Status {e.status_code})'
+        try:
+            error_details = e.response.json()
+            error_message += f": {error_details.get('error', {}).get('message', e.response.text)}"
+        except Exception:
+            error_message += f": {e.response.text}"
+        return jsonify({'status': 'error', 'message': error_message}), e.status_code
+    except ValueError as ve:  # Catch the validation error we added
+        print(f"Validation Error: {ve}")
+        return jsonify({'status': 'error', 'message': str(ve)}), 400  # Return 400 for validation errors
+    except Exception as e:
+        print(f"An unexpected error occurred in /generate_comprehension: {e}")
+        print(traceback.format_exc())
+        return jsonify({'status': 'error', 'message': f'An internal server error occurred.'}), 500
 
 # --- Run the App ---
 if __name__ == '__main__':
-    # Correctly indent line inside 'if'
     app.run(host='127.0.0.1', port=5001, debug=True)
