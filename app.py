@@ -136,7 +136,40 @@ def create_comprehension_prompt(transcript_text, num_questions=5):
 **{num_questions} Comprehension Questions:**
 """
     return prompt
+# --- Route to List Saved Items ---
+@app.route('/list_items', methods=['GET'])
+def list_items_route():
+    """Handles GET requests to retrieve saved items from the database."""
+    print("Received request at /list_items")
+    try:
+        # Query the database - get most recent 20 items for now
+        # Order by last modified date descending
+        items = GeneratedItem.query.order_by(GeneratedItem.last_modified_date.desc()).limit(20).all()
 
+        # Convert items to a list of dictionaries for JSON serialization
+        items_list = []
+        for item in items:
+            items_list.append({
+                'id': item.id,
+                'item_type': item.item_type,
+                'source_topic': item.source_topic,
+                'source_url': item.source_url,
+                'grade_level': item.grade_level,
+                # Optionally include creation/modified date (convert to string)
+                'last_modified': item.last_modified_date.isoformat(),
+                # Avoid sending full content_html in the list view for brevity
+                # 'content_preview': item.content_html[:100] + '...' # Example preview
+            })
+
+        return jsonify({'status': 'success', 'items': items_list})
+
+    except Exception as e:
+        print(f"Error retrieving items from database: {e}")
+        print(traceback.format_exc())
+        # Avoid sending detailed DB errors to frontend in production
+        return jsonify({'status': 'error', 'message': 'Error retrieving items from library.'}), 500
+
+# --- End of List Items Route ---
 # --- Route to Serve the Frontend HTML ---
 @app.route('/')
 def serve_index():

@@ -43,7 +43,18 @@
             <label for="modeYoutube">Comprehension from YouTube URL</label>
         </div>
     </fieldset>
+<!-- Output Area -->
+<h2 style="clear: both;">Generated Output:</h2>
+<div id="worksheetOutput">
+    Select a generator type, enter details, and click Generate.
+</div>
 
+<!-- Add New Library Area Below -->
+<hr style="margin: 30px 0;"> <!-- Separator -->
+<h2>Saved Item Library (Recent 20)</h2>
+<div id="libraryOutput" style="border: 1px solid #ccc; padding: 15px; background-color: #fff; min-height: 100px; border-radius: 4px; margin-top: 15px;">
+    Click "Load Saved Items" to view your library.
+</div>
     <!-- Inputs for Gap Fill -->
     <div id="gapFillInputs">
         <fieldset>
@@ -81,8 +92,9 @@
     </div>
 
     <!-- Action Buttons -->
-    <button id="generateButton">Generate</button>
+    <button id="generateButton">Generate New</button>
     <!-- Buttons float right, appear after Generate -->
+    <button id="loadLibraryButton" style="background-color: #6c757d;">Load Saved Items</button>
     <button id="saveButton" style="float: right; background-color: #28a745;" disabled>Save to Library</button>
     <button id="toggleEditButton" style="float: right;" disabled>Enable Editing</button>
 
@@ -95,6 +107,8 @@
 
     <script>
         // --- Get Element References (Grouped at Top) ---
+        const loadLibraryButton = document.getElementById('loadLibraryButton');
+        const libraryOutput = document.getElementById('libraryOutput');
         const modeGapFillRadio = document.getElementById('modeGapFill');
         const modeYoutubeRadio = document.getElementById('modeYoutube');
         const gapFillInputsDiv = document.getElementById('gapFillInputs');
@@ -197,7 +211,58 @@
         // Listener for Mode Radio Buttons
         modeGapFillRadio.addEventListener('change', handleModeChange);
         modeYoutubeRadio.addEventListener('change', handleModeChange);
+// --- LOAD LIBRARY BUTTON LISTENER ---
+loadLibraryButton.addEventListener('click', async () => {
+    libraryOutput.innerHTML = '<div class="loading">Loading library...</div>';
+    loadLibraryButton.disabled = true;
 
+    try {
+        const response = await fetch('/list_items'); // GET request by default
+        const data = await response.json();
+
+        if (!response.ok || data.status !== 'success') {
+            throw new Error(data.message || `HTTP error! Status: ${response.status}`);
+        }
+
+        // --- Display the list ---
+        if (data.items && data.items.length > 0) {
+            libraryOutput.innerHTML = ''; // Clear previous content
+            const list = document.createElement('ul');
+            list.style.listStyle = 'none'; // Remove default bullets
+            list.style.padding = '0';
+
+            data.items.forEach(item => {
+                const listItem = document.createElement('li');
+                listItem.style.borderBottom = '1px dashed #eee';
+                listItem.style.marginBottom = '10px';
+                listItem.style.paddingBottom = '10px';
+
+                // Basic display - improve later with buttons to load/delete
+                let description = `Type: ${item.item_type}`;
+                if(item.source_topic) description += `, Topic: ${item.source_topic}`;
+                if(item.source_url) description += `, URL: ${item.source_url}`;
+                description += `, Grade: ${item.grade_level}`;
+
+                listItem.innerHTML = `
+                    <strong>ID: ${item.id}</strong> - ${description} <br>
+                    <small>Last Modified: ${new Date(item.last_modified).toLocaleString()}</small>
+                    <button data-item-id="${item.id}" class="load-item-button" style="margin-left: 15px; padding: 2px 8px; font-size: 0.8em;">Load</button>
+                `;
+                list.appendChild(listItem);
+            });
+            libraryOutput.appendChild(list);
+        } else {
+            libraryOutput.innerHTML = '<p>No saved items found in the library.</p>';
+        }
+
+    } catch (error) {
+        console.error("Error loading library:", error);
+        libraryOutput.innerHTML = `<p style="color: red;">Error loading library: ${error.message}</p>`;
+    } finally {
+        loadLibraryButton.disabled = false;
+    }
+});
+// --- END OF LOAD LIBRARY LISTENER ---
         // Listener for Generate Button
         generateButton.addEventListener('click', async () => {
             let fetchUrl = '';
