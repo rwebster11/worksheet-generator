@@ -13,6 +13,7 @@ import re # For parsing YouTube URL
 load_dotenv()
 
 # Initialize the Flask application
+
 app = Flask(__name__)
 
 # --- Database Configuration ---
@@ -75,6 +76,69 @@ except Exception as e:
 ANTHROPIC_MODEL_NAME = "claude-3-opus-20240229"
 
 # --- Prompt Function ---
+def create_mcq_prompt(topic, grade_level, num_questions=5):
+    """Creates the prompt for Claude to generate multiple-choice questions."""
+    # This prompt needs to be very specific about the output format
+    prompt = f"""You are an expert curriculum developer creating assessment questions.
+Generate {num_questions} multiple-choice questions (MCQs) about the topic '{topic}'.
+The target audience is {grade_level} students.
+
+**CRITICAL INSTRUCTIONS for Output Format:**
+1.  **Question Generation:** Create {num_questions} distinct MCQs covering different important aspects of the topic. Adapt vocabulary and complexity for the {grade_level}.
+2.  **Options:** For each question, provide exactly four options: one correct answer (labeled A, B, C, or D) and three plausible distractors.
+3.  **Formatting:**
+    *   Present each question clearly, starting with a number (e.g., "1.", "2.").
+    *   List the options below each question, labeled "A.", "B.", "C.", "D.".
+    *   **DO NOT** indicate the correct answer within the question/option list itself.
+4.  **Answer Key:** After ALL questions and their options are listed, provide a separate section titled exactly "Answer Key:".
+5.  **Key Format:** In the Answer Key section, list the question number and the correct option letter (e.g., "1. C", "2. A", "3. B", etc.), each on a new line.
+6.  **Strict Output:** Output ONLY the numbered questions with their A/B/C/D options, followed by the "Answer Key:" section and the key itself. No extra text, introductions, or explanations.
+
+Topic: {topic}
+Audience: {grade_level}
+
+MCQs:
+"""
+    return prompt
+def create_text_block_prompt(topic, grade_level, focus=None):
+    """Creates the prompt for Claude to generate a block of text."""
+    # Instructions can be added based on 'focus' or other parameters later
+    focus_instruction = f"Focus on: {focus}" if focus else "Provide a general overview."
+
+    prompt = f"""You are a helpful assistant generating informational content.
+Write a clear and concise text block about the topic '{topic}'.
+The target audience is {grade_level} students.
+{focus_instruction}
+Aim for 1-3 paragraphs unless specified otherwise.
+Ensure the language is appropriate for the specified grade level.
+
+**Output ONLY the text block itself.** No titles, introductions, or extra formatting other than paragraphs.
+
+Topic: {topic}
+Audience: {grade_level}
+
+Text Block:
+"""
+    return prompt
+def create_true_false_prompt(topic, grade_level, num_statements=8):
+    """Creates the prompt for Claude to generate True/False statements."""
+    prompt = f"""You are an expert educator creating assessment materials.
+Generate {num_statements} True/False statements about the core concepts of the topic '{topic}'.
+The target audience is {grade_level} students.
+
+**CRITICAL INSTRUCTIONS:**
+1.  **Statement Generation:** Create {num_statements} clear statements. Ensure a mix of reasonably challenging statements that are definitively TRUE and definitively FALSE based on common knowledge for the {grade_level} audience regarding the topic '{topic}'. Avoid ambiguity or opinion-based statements.
+2.  **Formatting:** Present each statement clearly, starting with a number (e.g., "1.", "2.").
+3.  **Answer Key:** After ALL statements are listed, provide a separate section titled exactly "Answer Key:".
+4.  **Key Format:** In the Answer Key section, list the statement number followed by the word "True" or "False" (e.g., "1. True", "2. False", "3. True", etc.), each on a new line.
+5.  **Strict Output:** Output ONLY the numbered statements, followed by the "Answer Key:" section and the key itself. No extra text, introductions, or explanations.
+
+Topic: {topic}
+Audience: {grade_level}
+
+True/False Statements:
+"""
+    return prompt
 def create_gap_fill_prompt(topic, grade_level="middle school"):
     """Creates a more forceful prompt emphasizing grade level adaptation."""
     prompt = f"""You are an expert teacher creating educational resources tailored for a specific audience.
@@ -136,6 +200,35 @@ def create_comprehension_prompt(transcript_text, num_questions=5):
 **{num_questions} Comprehension Questions:**
 """
     return prompt
+# ---  create_short_answer_prompt function ---
+def create_short_answer_prompt(topic, grade_level, num_questions=5):
+    """Creates the prompt for Claude to generate short answer questions AND answer key points."""
+    prompt = f"""You are an expert educator designing formative assessments.
+Generate {num_questions} open-ended short answer questions about the key aspects of the topic '{topic}'.
+Also provide a brief answer key outlining the expected points or a model answer for each question.
+The target audience is {grade_level} students.
+
+**CRITICAL INSTRUCTIONS:**
+1.  **Question Generation:** Create {num_questions} distinct questions that require students to recall, explain, or briefly analyze information related to '{topic}'. Questions should encourage answers of 1-3 sentences. Adapt vocabulary and complexity for the {grade_level}.
+2.  **Question Formatting:** Present each question clearly, starting with a number (e.g., "1.", "2."). List each question on a new line.
+3.  **Answer Key Generation:** After ALL questions are listed, provide a separate section titled exactly "Answer Key:".
+4.  **Key Content:** For each question number in the Answer Key section, provide either:
+    *   A bulleted list of the key facts/points expected in a good answer.
+    *   OR a brief model answer (1-2 sentences).
+    Keep the answer key concise and focused on grading criteria.
+5.  **Key Formatting:** Start each answer key item with the corresponding question number (e.g., "1.", "2.").
+6.  **Strict Output:** Output ONLY the numbered list of questions, followed by the "Answer Key:" section and the key itself. No extra text, introductions, or explanations.
+
+Topic: {topic}
+Audience: {grade_level}
+
+Short Answer Questions:
+[Generate Questions Here Following Format]
+
+Answer Key:
+[Generate Answer Key Here Following Format]
+"""
+    return prompt
 # --- Route to List Saved Items ---
 @app.route('/list_items', methods=['GET'])
 def list_items_route():
@@ -170,6 +263,335 @@ def list_items_route():
         return jsonify({'status': 'error', 'message': 'Error retrieving items from library.'}), 500
 
 # --- End of List Items Route ---
+# --- Route for True/False Statement Generation ---
+@app.route('/generate_true_false', methods=['POST'])
+def generate_true_false_route():
+    """Handles POST requests to generate True/False statements."""
+    print("Received request at /generate_true_false")
+
+    if client is None: # Check Anthropic client
+        return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
+    if not request.is_json: # Check request format
+         return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+
+    try:
+        data = request.get_json()
+        topic = data.get('topic')
+        grade_level = data.get('grade_level', 'middle school')
+        num_statements_req = data.get('num_statements', 8) # Default to 8 statements
+
+        # --- Validation ---
+        if not topic:
+            return jsonify({'status': 'error', 'message': 'Missing "topic" in request data'}), 400
+        try:
+            num_statements = int(num_statements_req)
+            if not 3 <= num_statements <= 20: # Sensible range for T/F
+                raise ValueError("Number of statements must be between 3 and 20.")
+        except (ValueError, TypeError):
+             return jsonify({'status': 'error', 'message': 'Invalid number of statements specified (must be an integer between 3 and 20).'}), 400
+
+        print(f"Received T/F request: Topic='{topic}', Grade='{grade_level}', NumStatements={num_statements}")
+
+        # --- Create Prompt ---
+        prompt_content = create_true_false_prompt(topic, grade_level, num_statements)
+
+        # --- Call Anthropic API ---
+        print(f"Sending T/F request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
+        message = client.messages.create(
+            model=ANTHROPIC_MODEL_NAME,
+            max_tokens=1000 + (num_statements * 50), # Estimate tokens
+            temperature=0.6, # Maybe slightly less creative for T/F?
+            messages=[{ "role": "user", "content": prompt_content }]
+        )
+        print("Received response from Anthropic API.")
+
+        # --- Extract Result ---
+        generated_content = ""
+        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
+            generated_content = message.content[0].text
+        else:
+             print(f"Warning: Unexpected API response structure or empty content. Response: {message}")
+             return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
+
+        print(f"Generated T/F content length: {len(generated_content)} chars")
+
+        # --- Return Result (use a distinct key) ---
+        return jsonify({
+            'status': 'success',
+            'true_false_content': generated_content.strip() # Use 'true_false_content' key
+        })
+
+    # --- Error Handling (reuse existing handlers) ---
+    except ValueError as ve: # Catch our validation errors
+         print(f"Validation Error: {ve}")
+         return jsonify({'status': 'error', 'message': str(ve)}), 400
+    except anthropic.APIConnectionError as e: # ... Copy other handlers ...
+        print(f"API Connection Error: {e}")
+        return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
+    except anthropic.RateLimitError as e:
+        print(f"API Rate Limit Error: {e}")
+        return jsonify({'status': 'error', 'message': 'Rate limit exceeded. Please try again later.'}), 429
+    except anthropic.APIStatusError as e:
+        print(f"API Status Error: Status Code: {e.status_code}, Response: {e.response}")
+        error_message = f'AI service error (Status {e.status_code})'
+        try: error_details = e.response.json(); error_message += f": {error_details.get('error', {}).get('message', e.response.text)}"
+        except Exception: error_message += f": {e.response.text}"
+        return jsonify({'status': 'error', 'message': error_message}), e.status_code
+    except Exception as e:
+        print(f"An unexpected error occurred in /generate_true_false: {e}")
+        print(traceback.format_exc())
+        return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
+
+# --- End of True/False Route ---
+# --- Route for Multiple Choice Question Generation ---
+@app.route('/generate_mcq', methods=['POST'])
+def generate_mcq_route():
+    """Handles POST requests to generate Multiple Choice Questions."""
+    print("Received request at /generate_mcq")
+
+    if client is None: # Check Anthropic client
+        # ... (keep existing error handling) ...
+        return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
+    if not request.is_json: # Check request format
+        # ... (keep existing error handling) ...
+         return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+
+    try:
+        data = request.get_json()
+        topic = data.get('topic')
+        grade_level = data.get('grade_level', 'middle school') # Default grade level
+        num_questions_req = data.get('num_questions', 5) # Default number
+
+        # --- Validation ---
+        if not topic:
+            return jsonify({'status': 'error', 'message': 'Missing "topic" in request data'}), 400
+        try:
+            num_questions = int(num_questions_req)
+            if not 2 <= num_questions <= 15: # Adjust range as needed
+                raise ValueError("Number of questions must be between 2 and 15.")
+        except (ValueError, TypeError):
+             return jsonify({'status': 'error', 'message': 'Invalid number of questions specified (must be an integer between 2 and 15).'}), 400
+
+        print(f"Received MCQ request: Topic='{topic}', Grade='{grade_level}', NumQuestions={num_questions}")
+
+        # --- Create Prompt ---
+        prompt_content = create_mcq_prompt(topic, grade_level, num_questions)
+
+        # --- Call Anthropic API ---
+        print(f"Sending MCQ request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
+        message = client.messages.create(
+            model=ANTHROPIC_MODEL_NAME,
+            max_tokens=1500 + (num_questions * 100), # Generous token estimate for questions + options
+            temperature=0.7, # Adjust as needed
+            messages=[{ "role": "user", "content": prompt_content }]
+        )
+        print("Received response from Anthropic API.")
+
+        # --- Extract Result ---
+        generated_content = ""
+        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
+            generated_content = message.content[0].text
+        else:
+             # ... (keep existing error handling for bad response structure) ...
+             print(f"Warning: Unexpected API response structure or empty content. Response: {message}")
+             return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
+
+        print(f"Generated MCQ content length: {len(generated_content)} chars")
+
+        # --- Return Result (use a distinct key) ---
+        return jsonify({
+            'status': 'success',
+            'mcq_content': generated_content.strip() # Use 'mcq_content' key
+        })
+
+    # --- Error Handling (reuse existing handlers) ---
+    except ValueError as ve: # Catch our validation errors
+         print(f"Validation Error: {ve}")
+         return jsonify({'status': 'error', 'message': str(ve)}), 400
+    # ... include the existing except blocks for anthropic errors and general Exception ...
+    except anthropic.APIConnectionError as e:
+        print(f"API Connection Error: {e}")
+        return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
+    except anthropic.RateLimitError as e:
+        print(f"API Rate Limit Error: {e}")
+        return jsonify({'status': 'error', 'message': 'Rate limit exceeded. Please try again later.'}), 429
+    except anthropic.APIStatusError as e:
+        print(f"API Status Error: Status Code: {e.status_code}, Response: {e.response}")
+        # ... (error message extraction logic from previous routes) ...
+        error_message = f'AI service error (Status {e.status_code})'
+        try:
+            error_details = e.response.json()
+            error_message += f": {error_details.get('error', {}).get('message', e.response.text)}"
+        except Exception:
+            error_message += f": {e.response.text}"
+        return jsonify({'status': 'error', 'message': error_message}), e.status_code
+    except Exception as e:
+        print(f"An unexpected error occurred in /generate_mcq: {e}")
+        print(traceback.format_exc())
+        return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
+
+# --- End of MCQ Route ---
+# --- Route for Text Block Generation ---
+@app.route('/generate_text_block', methods=['POST'])
+def generate_text_block_route():
+    """Handles POST requests to generate a text block."""
+    print("Received request at /generate_text_block")
+
+    if client is None: return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
+    if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+
+    try:
+        data = request.get_json()
+        topic = data.get('topic')
+        grade_level = data.get('grade_level', 'middle school')
+        focus = data.get('focus') # Optional focus instruction
+
+        # --- Validation ---
+        if not topic: # Topic is required for generation
+            return jsonify({'status': 'error', 'message': 'Missing "topic" for text generation'}), 400
+
+        print(f"Received Text Block request: Topic='{topic}', Grade='{grade_level}', Focus='{focus}'")
+
+        # --- Create Prompt ---
+        prompt_content = create_text_block_prompt(topic, grade_level, focus)
+
+        # --- Call Anthropic API ---
+        print(f"Sending Text Block request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
+        message = client.messages.create(
+            model=ANTHROPIC_MODEL_NAME,
+            max_tokens=800, # Adjust as needed for text length
+            temperature=0.7,
+            messages=[{ "role": "user", "content": prompt_content }]
+        )
+        print("Received response from Anthropic API.")
+
+        # --- Extract Result ---
+        generated_content = ""
+        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
+            generated_content = message.content[0].text
+        else:
+             print(f"Warning: Unexpected API response structure or empty content. Response: {message}"); return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
+
+        print(f"Generated Text Block length: {len(generated_content)} chars")
+
+        # --- Return Result (use a distinct key) ---
+        return jsonify({
+            'status': 'success',
+            'text_block_content': generated_content.strip()
+        })
+
+    # --- Error Handling ---
+    except ValueError as ve: print(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
+    except anthropic.APIConnectionError as e: print(f"API Connection Error: {e}"); return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
+    except anthropic.RateLimitError as e: print(f"API Rate Limit Error: {e}"); return jsonify({'status': 'error', 'message': 'Rate limit exceeded. Please try again later.'}), 429
+    except anthropic.APIStatusError as e:
+            print(f"API Status Error: Status Code: {e.status_code}, Response: {e.response}")
+            error_message = f'AI service error (Status {e.status_code})'
+            # --- Start of nested try ---
+            try:
+                # Try to parse more specific error details from the JSON response body
+                error_details = e.response.json()
+                error_message += f": {error_details.get('error', {}).get('message', e.response.text)}"
+            # --- Nested except - correctly indented ---
+            except Exception:
+                # --- Line inside nested except - correctly indented ---
+                # Fallback to using the raw response text if JSON parsing fails
+                error_message += f": {e.response.text}"
+            # --- End of nested try...except ---
+
+            # This return statement is correctly indented for the APIStatusError block
+            return jsonify({'status': 'error', 'message': error_message}), e.status_code
+
+        # --- This except block starts on a NEW LINE and is indented correctly ---
+    except Exception as e:
+            # --- Lines inside this except block are correctly indented ---
+        print(f"An unexpected error occurred in /generate_text_block: {e}") # Ensure route name is correct
+        print(traceback.format_exc())
+        return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
+# --- End of Text Block Route ---
+# --- Route for Short Answer Question Generation ---
+@app.route('/generate_short_answer', methods=['POST'])
+def generate_short_answer_route():
+    """Handles POST requests to generate Short Answer questions and keys."""
+    print("Received request at /generate_short_answer")
+    # ... (Keep client check, json check) ...
+    if client is None: return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
+    if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+
+    try:
+        data = request.get_json()
+        topic = data.get('topic')
+        grade_level = data.get('grade_level', 'middle school')
+        num_questions_req = data.get('num_questions', 5)
+
+        # --- Validation (Keep existing validation) ---
+        if not topic: return jsonify({'status': 'error', 'message': 'Missing "topic" in request data'}), 400
+        try:
+            num_questions = int(num_questions_req);
+            if not 2 <= num_questions <= 10: raise ValueError("Number of questions must be between 2 and 10.")
+        except (ValueError, TypeError): return jsonify({'status': 'error', 'message': 'Invalid number of questions specified (must be an integer between 2 and 10).'}), 400
+
+        print(f"Received SA request: Topic='{topic}', Grade='{grade_level}', NumQuestions={num_questions}")
+
+        # --- Create Prompt (Uses the *updated* prompt function) ---
+        prompt_content = create_short_answer_prompt(topic, grade_level, num_questions)
+
+        # --- Call Anthropic API ---
+        print(f"Sending SA request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
+        message = client.messages.create(
+            model=ANTHROPIC_MODEL_NAME,
+            max_tokens=1200 + (num_questions * 100), # Increased slightly for answers
+            temperature=0.7,
+            messages=[{ "role": "user", "content": prompt_content }]
+        )
+        print("Received response from Anthropic API.")
+
+        # --- Extract Result (No change needed here) ---
+        generated_content = ""
+        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
+            generated_content = message.content[0].text
+        else:
+             print(f"Warning: Unexpected API response structure or empty content. Response: {message}"); return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
+
+        print(f"Generated SA content length: {len(generated_content)} chars")
+
+        # --- Return Result (No change needed here) ---
+        return jsonify({
+            'status': 'success',
+            'short_answer_content': generated_content.strip() # Key 'short_answer_content' now includes Qs and Key
+        })
+
+    # --- Error Handling (Keep existing handlers) ---
+    # ... except ValueError ...
+    # ... except anthropic errors ...
+    # ... except Exception ...
+        # --- Error Handling ---
+    except ValueError as ve:
+         print(f"Validation Error: {ve}")
+         return jsonify({'status': 'error', 'message': str(ve)}), 400
+    except anthropic.APIConnectionError as e:
+        print(f"API Connection Error: {e}")
+        return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
+    except anthropic.RateLimitError as e:
+        print(f"API Rate Limit Error: {e}")
+        return jsonify({'status': 'error', 'message': 'Rate limit exceeded. Please try again later.'}), 429
+    # *** CORRECTED BLOCK BELOW ***
+    except anthropic.APIStatusError as e:
+        print(f"API Status Error: Status Code: {e.status_code}, Response: {e.response}")
+        error_message = f'AI service error (Status {e.status_code})'
+        try:
+            error_details = e.response.json()
+            error_message += f": {error_details.get('error', {}).get('message', e.response.text)}"
+        except Exception: # Catch potential JSON decoding errors or different structures
+            error_message += f": {e.response.text}" # Fallback to raw text
+        return jsonify({'status': 'error', 'message': error_message}), e.status_code
+    # *** END OF CORRECTED BLOCK ***
+    except Exception as e:
+        print(f"An unexpected error occurred in /generate_short_answer: {e}")
+        print(traceback.format_exc())
+        return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
+
+# --- End of Short Answer Route ---
 # --- Route to Serve the Frontend HTML ---
 @app.route('/')
 def serve_index():
@@ -230,7 +652,41 @@ def save_item_route():
         return jsonify({'status': 'error', 'message': f'Database error: {e}'}), 500
 
 # --- End of Save Route ---
+# --- Route to Get Full Content of a Specific Saved Item ---
+@app.route('/get_item/<int:item_id>', methods=['GET'])
+def get_item_route(item_id):
+    """Handles GET requests to retrieve full details for a specific item ID."""
+    print(f"Received request at /get_item/{item_id}")
+    try:
+        # Query the database for the item by its primary key (ID)
+        # .get_or_404() is convenient: returns item or aborts with 404 if not found
+        item = db.session.get(GeneratedItem, item_id) # Simpler query for primary key
 
+        if item is None:
+            print(f"Item with ID {item_id} not found.")
+            return jsonify({'status': 'error', 'message': 'Item not found in library.'}), 404
+
+        print(f"Found item: {item.item_type}, Topic: {item.source_topic}, URL: {item.source_url}")
+
+        # Return the full details, including the crucial content_html
+        item_data = {
+            'id': item.id,
+            'item_type': item.item_type,
+            'source_topic': item.source_topic,
+            'source_url': item.source_url,
+            'grade_level': item.grade_level,
+            'content_html': item.content_html, # Send the full HTML content
+            'creation_date': item.creation_date.isoformat(),
+            'last_modified_date': item.last_modified_date.isoformat()
+        }
+        return jsonify({'status': 'success', 'item': item_data})
+
+    except Exception as e:
+        print(f"Error retrieving item {item_id} from database: {e}")
+        print(traceback.format_exc())
+        return jsonify({'status': 'error', 'message': 'Error retrieving item details.'}), 500
+
+# --- End of Get Item Route ---
 # --- Route to Handle Worksheet Generation ---
 @app.route('/generate_worksheet', methods=['POST'])
 def generate_worksheet_route():
@@ -441,4 +897,4 @@ def generate_comprehension_route():
 
 # --- Run the App ---
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5001, debug=True)
+    app.run(host='127.0.0.1', port=5001)
