@@ -62,28 +62,29 @@ class GeneratedItem(db.Model):
 # --- End Database Model Definition ---
 
 # Initialize the Anthropic Client (More robust initialization)
-client = None # Initialize client to None *before* the try block
+client = None
 try:
     logging.info("Attempting to initialize Anthropic client...")
     api_key_from_env = os.getenv("ANTHROPIC_API_KEY")
 
     if not api_key_from_env:
-        # Log the error clearly if key is missing
-        logging.error("CRITICAL: ANTHROPIC_API_KEY not found in environment variables after load_dotenv.")
-        # client remains None
+        logging.error("CRITICAL: ANTHROPIC_API_KEY not found in environment variables.")
     else:
-        # Log that the key WAS found (don't log the key itself)
-        logging.info("ANTHROPIC_API_KEY found in environment.")
-        # Attempt to initialize
-        client = anthropic.Anthropic(api_key=api_key_from_env)
-        logging.info("Anthropic client object CREATED successfully.")
-        # Optional Test Call (maybe keep commented out for now)
-        # try:
-        #    client.messages.create(...)
-        #    logging.info("Test API call successful.")
-        # except Exception as api_err:
-        #    logging.warning(f"Test API call failed during initialization: {api_err}")
+        logging.info("ANTHROPIC_API_KEY found. Initializing client...")
 
+        # *** ADD PROXY CONFIGURATION FOR PYTHONANYWHERE FREE TIER ***
+        proxy_url = "http://proxy.server:3128"
+        proxies = {
+            "http": proxy_url,
+            "https": proxy_url,
+        }
+
+        client = anthropic.Anthropic(
+            api_key=api_key_from_env,
+            proxies=proxies # <-- Pass the proxy configuration here
+        )
+        logging.info("Anthropic client object CREATED successfully (with proxy).")
+        # ... (optional test call) ...
 except Exception as e:
     # Log any exception during the client initialization process
     logging.error(f"CRITICAL: Exception during Anthropic client initialization: {e}", exc_info=True) # Log traceback too
