@@ -502,10 +502,26 @@ def generate_text_block_route():
              print(f"Anthropic Rate Limit Error: {rate_err}")
              return jsonify({'status': 'error', 'message': 'AI Rate Limit Exceeded.'}), 429
         except anthropic.APIStatusError as status_err:
-             # Keep the detailed handling for other API status errors
-             print(f"Anthropic API Status Error: Status Code: {status_err.status_code}, Response: {status_err.response}")
-             error_message = f'AI service error (Status {status_err.status_code})'; try: error_details = status_err.response.json(); error_message += f": {error_details.get('error', {}).get('message', status_err.response.text)}"; except Exception: error_message += f": {status_err.response.text}"; return jsonify({'status': 'error', 'message': error_message}), status_err.status_code
-        except Exception as api_call_err: # Catch other errors during the API call itself
+            # --- Start of APIStatusError block ---
+            print(f"Anthropic API Status Error: Status Code: {status_err.status_code}, Response: {status_err.response}")
+            error_message = f'AI service error (Status {status_err.status_code})' # Semicolon removed
+
+            # --- Start of nested try (indented) ---
+            try:
+                error_details = status_err.response.json() # Semicolon removed
+                error_message += f": {error_details.get('error', {}).get('message', status_err.response.text)}" # Semicolon removed
+            # --- Nested except (indented to match nested try) ---
+            except Exception:
+                # --- Line inside nested except (indented further) ---
+                error_message += f": {status_err.response.text}" # Semicolon removed
+            # --- End of nested try...except ---
+
+            # This return belongs to the outer APIStatusError block (indented same as print/error_message assignment)
+            return jsonify({'status': 'error', 'message': error_message}), status_err.status_code
+        # --- End of APIStatusError block ---
+
+        except Exception as api_call_err: # Correctly indented relative to outer 
+             
              print(f"Unexpected error DURING Anthropic API call: {api_call_err}")
              print(traceback.format_exc())
              return jsonify({'status': 'error', 'message': f'Unexpected error during AI call: {api_call_err}'}), 500
