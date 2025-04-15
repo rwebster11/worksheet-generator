@@ -9,70 +9,85 @@
         .worksheet-section { border: 1px solid #e0e0e0; padding: 10px 15px; margin-bottom: 15px; background-color: #fff; border-radius: 4px; }
         .worksheet-section h3 { margin-top: 0; margin-bottom: 10px; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
         .editable-content { outline: 1px dashed blue; background-color: #f0f8ff; cursor: text; padding: 2px 4px; min-height: 1em; border-radius: 2px;}
-        #worksheetOutput p, #worksheetOutput li { margin-bottom: 0.5em; }
+        #itemPreviewArea p, #itemPreviewArea li { margin-bottom: 0.5em; }
+        #libraryOutput li { border-bottom: 1px dashed #eee; margin-bottom: 10px; padding-bottom: 10px; } /* Style library list */
         /* Basic styling */
         body { font-family: sans-serif; padding: 20px; background-color: #f0f0f0; }
         label { display: block; margin-bottom: 5px; font-weight: bold; }
-        input[type="text"], input[type="url"], input[type="number"], select { width: 100%; max-width: 450px; padding: 8px; margin-bottom: 15px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px;}
-        button { padding: 10px 15px; cursor: pointer; margin-bottom: 15px; margin-left: 5px; /* Added small left margin */ border: none; border-radius: 4px; background-color: #007bff; color: white; font-size: 1em;}
+        input[type="text"], input[type="url"], input[type="number"], select, textarea { width: 100%; max-width: 450px; padding: 8px; margin-bottom: 15px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px;} /* Added textarea */
+        button { padding: 10px 15px; cursor: pointer; margin-bottom: 15px; margin-left: 5px; border: none; border-radius: 4px; background-color: #007bff; color: white; font-size: 1em;}
         button:disabled { background-color: #cccccc; cursor: not-allowed; }
         button#toggleEditButton { background-color: #ffc107; color: black; }
-        button#saveButton { background-color: #28a745; } /* Green for save */
-        #worksheetOutput { margin-top: 20px; border: 1px solid #ccc; padding: 15px; white-space: pre-wrap; background-color: #fdfdfd; min-height: 150px; border-radius: 4px;}
+        button#saveButton { background-color: #28a745; }
+        button#loadLibraryButton { background-color: #6c757d; }
+        #itemPreviewArea { margin-top: 10px; border: 1px solid #ccc; padding: 15px; white-space: pre-wrap; background-color: #fdfdfd; min-height: 150px; border-radius: 4px;}
+        #libraryOutput { border: 1px solid #ccc; padding: 15px; background-color: #fff; min-height: 100px; border-radius: 4px; margin-top: 10px; }
         .loading { font-style: italic; color: grey; }
         .hidden { display: none; }
         fieldset { border: 1px solid #ccc; padding: 15px; margin-bottom: 15px; border-radius: 4px; background-color: #fff;}
         legend { font-weight: bold; padding: 0 5px; }
-        h1, h2 { color: #333; }
+        h1, h2 { color: #333; margin-top: 25px; margin-bottom: 10px;}
+        h1:first-of-type { margin-top: 0; }
+        hr { margin: 30px 0; border: 0; border-top: 1px solid #ccc; }
         /* Style radio labels */
         fieldset div label { display: inline; font-weight: normal; margin-left: 5px; }
+        fieldset div input[type="checkbox"] + label { display: inline; font-weight: normal;} /* Style checkbox label */
     </style>
 </head>
 <body>
     <h1>AI Worksheet Generator</h1>
 
+    <!-- ======================= -->
+    <!-- Section 1: LOAD LIBRARY -->
+    <!-- ======================= -->
+    <h2>Saved Item Library</h2>
+    <button id="loadLibraryButton">Load Saved Items</button>
+    <div id="libraryOutput">
+        Click "Load Saved Items" to view your library.
+    </div>
+
+    <hr>
+
+    <!-- ========================== -->
+    <!-- Section 2: GENERATE NEW    -->
+    <!-- ========================== -->
+    <h2>Generate New Item</h2>
     <!-- Mode Selection -->
     <fieldset>
         <legend>Select Generator Type</legend>
+        <!-- ** FIXED: Restored Gap Fill Radio Button & Corrected Nesting ** -->
         <div>
             <input type="radio" id="modeGapFill" name="generatorMode" value="gapFill" checked>
-            <label for="modeGapFill">Gap-Fill from Topic</label>
+            <label for="modeGapFill">Gap-Fill</label>
         </div>
         <div>
             <input type="radio" id="modeYoutube" name="generatorMode" value="youtube">
-            <label for="modeYoutube">Comprehension from YouTube URL</label>
+            <label for="modeYoutube">YouTube Comprehension</label>
+        </div>
+        <div>
+            <input type="radio" id="modeMcq" name="generatorMode" value="mcq">
+            <label for="modeMcq">Multiple Choice</label>
+        </div>
+        <div>
+            <input type="radio" id="modeTrueFalse" name="generatorMode" value="trueFalse">
+            <label for="modeTrueFalse">True/False</label>
+        </div>
+        <div>
+            <input type="radio" id="modeShortAnswer" name="generatorMode" value="shortAnswer">
+            <label for="modeShortAnswer">Short Answer Questions</label>
+        </div>
+        <div>
+            <input type="radio" id="modeTextBlock" name="generatorMode" value="textBlock">
+            <label for="modeTextBlock">Text Block / Instructions</label>
         </div>
     </fieldset>
-<!-- Output Area -->
-<h2 style="clear: both;">Generated Output:</h2>
-<div id="worksheetOutput">
-    Select a generator type, enter details, and click Generate.
-</div>
 
-<!-- Add New Library Area Below -->
-<hr style="margin: 30px 0;"> <!-- Separator -->
-<h2>Saved Item Library (Recent 20)</h2>
-<div id="libraryOutput" style="border: 1px solid #ccc; padding: 15px; background-color: #fff; min-height: 100px; border-radius: 4px; margin-top: 15px;">
-    Click "Load Saved Items" to view your library.
-</div>
-    <!-- Inputs for Gap Fill -->
+    <!-- Inputs for Gap Fill (Should be visible by default) -->
     <div id="gapFillInputs">
         <fieldset>
             <legend>Gap-Fill Options</legend>
-            <div>
-                <label for="topicInput">Enter Topic:</label>
-                <input type="text" id="topicInput" placeholder="e.g., Photosynthesis, Solar System">
-            </div>
-            <div>
-                <label for="gradeLevelSelect">Grade Level:</label>
-                <select id="gradeLevelSelect" name="grade_level">
-                    <option value="elementary school">Elementary School</option>
-                    <option value="middle school" selected>Middle School</option>
-                    <option value="high school">High School</option>
-                    <option value="university">University</option>
-                    <option value="general adult">General Adult</option>
-                </select>
-            </div>
+            <div> <label for="topicInput">Enter Topic:</label> <input type="text" id="topicInput" placeholder="e.g., Photosynthesis"> </div>
+            <div> <label for="gradeLevelSelect">Grade Level:</label> <select id="gradeLevelSelect" name="grade_level"> <option value="elementary school">Elementary</option> <option value="middle school" selected>Middle</option> <option value="high school">High</option> <option value="university">University</option> <option value="general adult">Adult</option> </select> </div>
         </fieldset>
     </div>
 
@@ -80,405 +95,453 @@
     <div id="youtubeInputs" class="hidden">
         <fieldset>
             <legend>YouTube Comprehension Options</legend>
-            <div>
-                <label for="youtubeUrlInput">Enter YouTube Video URL:</label>
-                <input type="url" id="youtubeUrlInput" placeholder="https://www.youtube.com/watch?v=...">
-            </div>
-            <div>
-                <label for="numQuestionsInput">Number of Questions (approx):</label>
-                <input type="number" id="numQuestionsInput" value="5" min="2" max="15">
-            </div>
+            <div> <label for="youtubeUrlInput">YouTube Video URL:</label> <input type="url" id="youtubeUrlInput" placeholder="https://www.youtube.com/watch?v=..."> </div>
+            <div> <label for="numQuestionsInput">Number of Questions:</label> <input type="number" id="numQuestionsInput" value="5" min="2" max="15"> </div>
         </fieldset>
     </div>
 
-    <!-- Action Buttons -->
-    <button id="generateButton">Generate New</button>
-    <!-- Buttons float right, appear after Generate -->
-    <button id="loadLibraryButton" style="background-color: #6c757d;">Load Saved Items</button>
-    <button id="saveButton" style="float: right; background-color: #28a745;" disabled>Save to Library</button>
-    <button id="toggleEditButton" style="float: right;" disabled>Enable Editing</button>
-
-    <!-- Output Area -->
-    <h2 style="clear: both;">Generated Output:</h2>
-    <div id="worksheetOutput">
-        Select a generator type, enter details, and click Generate.
+    <!-- Inputs for Multiple Choice -->
+    <div id="mcqInputs" class="hidden">
+        <fieldset>
+            <legend>Multiple Choice Options</legend>
+            <div> <label for="mcqTopicInput">Enter Topic:</label> <input type="text" id="mcqTopicInput" placeholder="e.g., Mitochondria"> </div>
+            <div> <label for="mcqGradeLevelSelect">Grade Level:</label> <select id="mcqGradeLevelSelect" name="mcq_grade_level"> <option value="elementary school">Elementary</option> <option value="middle school" selected>Middle</option> <option value="high school">High</option> <option value="university">University</option> <option value="general adult">Adult</option> </select> </div>
+            <div> <label for="mcqNumQuestionsInput">Number of Questions:</label> <input type="number" id="mcqNumQuestionsInput" value="5" min="2" max="15"> </div>
+        </fieldset>
     </div>
 
+    <!-- Inputs for True/False -->
+    <div id="trueFalseInputs" class="hidden">
+        <fieldset>
+            <legend>True/False Options</legend>
+            <div> <label for="tfTopicInput">Enter Topic:</label> <input type="text" id="tfTopicInput" placeholder="e.g., The Roman Empire"> </div>
+            <div> <label for="tfGradeLevelSelect">Grade Level:</label> <select id="tfGradeLevelSelect" name="tf_grade_level"> <option value="elementary school">Elementary</option> <option value="middle school" selected>Middle</option> <option value="high school">High</option> <option value="university">University</option> <option value="general adult">Adult</option> </select> </div>
+            <div> <label for="tfNumStatementsInput">Number of Statements:</label> <input type="number" id="tfNumStatementsInput" value="8" min="3" max="20"> </div>
+        </fieldset>
+    </div>
+
+    <!-- Inputs for Short Answer -->
+    <div id="shortAnswerInputs" class="hidden">
+        <fieldset>
+            <legend>Short Answer Options</legend>
+            <div> <label for="saTopicInput">Enter Topic:</label> <input type="text" id="saTopicInput" placeholder="e.g., Climate Change"> </div>
+            <div> <label for="saGradeLevelSelect">Grade Level:</label> <select id="saGradeLevelSelect" name="sa_grade_level"> <option value="elementary school">Elementary</option> <option value="middle school" selected>Middle</option> <option value="high school">High</option> <option value="university">University</option> <option value="general adult">Adult</option> </select> </div>
+            <div> <label for="saNumQuestionsInput">Number of Questions:</label> <input type="number" id="saNumQuestionsInput" value="5" min="2" max="10"> </div>
+        </fieldset>
+    </div>
+
+    <!-- Inputs for Text Block -->
+    <div id="textBlockInputs" class="hidden">
+        <fieldset>
+            <legend>Text Block Options</legend>
+             <div> <input type="checkbox" id="tbGenerateTextCheckbox" name="tb_generate_text" checked style="display: inline; width: auto; margin-bottom: 10px;"> <label for="tbGenerateTextCheckbox">Generate text using AI?</label> </div>
+             <div id="tbTopicInputDiv"> <label for="tbTopicInput">Topic (for AI generation):</label> <input type="text" id="tbTopicInput" placeholder="e.g., The Importance of Bees"> </div>
+             <div> <label for="tbGradeLevelSelect">Grade Level (for AI generation):</label> <select id="tbGradeLevelSelect" name="tb_grade_level"> <option value="elementary school">Elementary</option> <option value="middle school" selected>Middle</option> <option value="high school">High</option> <option value="university">University</option> <option value="general adult">Adult</option> </select> </div>
+             <div> <label for="tbDirectInput">Or Enter/Edit Your Text Directly:</label> <textarea id="tbDirectInput" rows="8" placeholder="Type your instructions or text here..."></textarea> </div>
+        </fieldset>
+    </div>
+
+    <!-- Generate Button -->
+    <button id="generateButton">Generate New</button>
+
+    <hr>
+
+    <!-- ================================== -->
+    <!-- Section 3: GENERATED OUTPUT/EDITOR -->
+    <!-- ================================== -->
+    <button id="saveButton" style="float: right;" disabled>Save to Library</button>
+    <button id="toggleEditButton" style="float: right;" disabled>Enable Editing</button>
+    <button id="addToSheetButton" style="float: right; background-color: #17a2b8;" disabled>Add Item to Worksheet</button>
+    <h2 style="clear: both;">Item preview / Editor</h2>
+    <div id="itemPreviewArea"> Generated/loaded item will appear here for preview/editing. </div>
+    <hr>
+    <h2>Worksheet Assembly Area</h2>
+<button id="clearSheetButton" style="background-color: #dc3545;">Clear Worksheet</button> <!-- Added Clear Button -->
+<div id="worksheetAssemblyArea" style="border: 2px dashed #6c757d; padding: 20px; background-color: #e9ecef; min-height: 300px; margin-top: 15px;">
+    <!-- Items added to the worksheet will appear here -->
+    <p style="color: grey; font-style: italic;">Items added to the worksheet will appear here.</p>
+</div>
 
     <script>
-        // --- Get Element References (Grouped at Top) ---
-        const loadLibraryButton = document.getElementById('loadLibraryButton');
-        const libraryOutput = document.getElementById('libraryOutput');
+        // --- Get Element References (Consolidated) ---
         const modeGapFillRadio = document.getElementById('modeGapFill');
         const modeYoutubeRadio = document.getElementById('modeYoutube');
+        const modeMcqRadio = document.getElementById('modeMcq');
+        const modeTrueFalseRadio = document.getElementById('modeTrueFalse');
+        const modeShortAnswerRadio = document.getElementById('modeShortAnswer');
+        const modeTextBlockRadio = document.getElementById('modeTextBlock');
+
         const gapFillInputsDiv = document.getElementById('gapFillInputs');
         const youtubeInputsDiv = document.getElementById('youtubeInputs');
+        const mcqInputsDiv = document.getElementById('mcqInputs');
+        const trueFalseInputsDiv = document.getElementById('trueFalseInputs');
+        const shortAnswerInputsDiv = document.getElementById('shortAnswerInputs');
+        const textBlockInputsDiv = document.getElementById('textBlockInputs');
+
         const topicInput = document.getElementById('topicInput');
         const gradeLevelSelect = document.getElementById('gradeLevelSelect');
+
         const youtubeUrlInput = document.getElementById('youtubeUrlInput');
-        const numQuestionsInput = document.getElementById('numQuestionsInput');
+        const numQuestionsInput = document.getElementById('numQuestionsInput'); // YT Num Qs
+
+        const mcqTopicInput = document.getElementById('mcqTopicInput');
+        const mcqGradeLevelSelect = document.getElementById('mcqGradeLevelSelect');
+        const mcqNumQuestionsInput = document.getElementById('mcqNumQuestionsInput');
+
+        const tfTopicInput = document.getElementById('tfTopicInput');
+        const tfGradeLevelSelect = document.getElementById('tfGradeLevelSelect');
+        const tfNumStatementsInput = document.getElementById('tfNumStatementsInput');
+
+        const saTopicInput = document.getElementById('saTopicInput');
+        const saGradeLevelSelect = document.getElementById('saGradeLevelSelect');
+        const saNumQuestionsInput = document.getElementById('saNumQuestionsInput');
+
+        const tbGenerateTextCheckbox = document.getElementById('tbGenerateTextCheckbox');
+        const tbTopicInputDiv = document.getElementById('tbTopicInputDiv');
+        const tbTopicInput = document.getElementById('tbTopicInput');
+        const tbGradeLevelSelect = document.getElementById('tbGradeLevelSelect');
+        const tbDirectInput = document.getElementById('tbDirectInput');
+
         const generateButton = document.getElementById('generateButton');
-        const worksheetOutput = document.getElementById('worksheetOutput');
-        const toggleEditButton = document.getElementById('toggleEditButton'); // Only one declaration
-        const saveButton = document.getElementById('saveButton');             // Only one declaration
+        const loadLibraryButton = document.getElementById('loadLibraryButton');
+        const itemPreviewArea = document.getElementById('itemPreviewArea');
+        const addToSheetButton = document.getElementById('addToSheetButton');
+        const worksheetAssemblyArea = document.getElementById('worksheetAssemblyArea');
+        const clearSheetButton = document.getElementById('clearSheetButton');
+        const libraryOutput = document.getElementById('libraryOutput');
+        const toggleEditButton = document.getElementById('toggleEditButton');
+        const saveButton = document.getElementById('saveButton');
 
         // --- State Variables ---
-        let isEditingEnabled = false; // Only one declaration
+        let isEditingEnabled = false;
 
         // --- Helper Functions ---
 
-        // Function to handle switching between input modes
-        function handleModeChange() {
-            if (modeYoutubeRadio.checked) {
-                gapFillInputsDiv.classList.add('hidden');
-                youtubeInputsDiv.classList.remove('hidden');
-            } else { // Gap Fill is checked
-                gapFillInputsDiv.classList.remove('hidden');
-                youtubeInputsDiv.classList.add('hidden');
-            }
-             // Reset output and buttons on mode change
-             worksheetOutput.innerHTML = 'Enter details for the selected mode and click Generate.';
-             toggleEditButton.disabled = true;
-             saveButton.disabled = true;
-             toggleEditButton.textContent = 'Enable Editing';
-             if (isEditingEnabled) { // If editing was enabled, reset styles
-                 worksheetOutput.style.border = '1px solid #ccc';
-                 isEditingEnabled = false;
-             }
-        }
-
-        // Function to parse Gap-Fill text
-        function parseAndStructureGapFill(rawText) {
-            // console.log("Parsing Gap Fill Text:", rawText.substring(0, 100) + "...");
-            const keyIdentifier = "Answer Key:";
-            // Use regex for case-insensitive match at the start of a line (^ with 'm' flag)
-            const keyIndex = rawText.search(new RegExp(`^${keyIdentifier.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}\\s*`, 'im'));
-            let contentPart = rawText;
-            let keyPart = "";
-            let structuredHtml = "";
-
-            if (keyIndex !== -1) {
-                contentPart = rawText.substring(0, keyIndex).trim();
-                keyPart = rawText.substring(keyIndex + keyIdentifier.length).trim();
-                // console.log("Split into Content / Key parts");
+        // Handles showing/hiding topic input for Text Block mode
+        function handleTbCheckboxChange() {
+            if (tbGenerateTextCheckbox.checked) {
+                tbTopicInputDiv.classList.remove('hidden');
             } else {
-                console.warn("Could not find 'Answer Key:' separator. Displaying raw text.");
-                return `<div class="worksheet-section"><h3>Worksheet (Format Issue?)</h3><div>${contentPart.replace(/\n/g, '<br>')}</div></div>`;
+                tbTopicInputDiv.classList.add('hidden');
             }
-
-            const sentences = contentPart.split('\n').filter(line => line.trim() !== '');
-            structuredHtml += '<div class="worksheet-section" id="gap-fill-sentences"><h3>Worksheet Sentences</h3>';
-            sentences.forEach((sentence, index) => {
-                structuredHtml += `<p data-index="${index}">${sentence.trim()}</p>`;
-            });
-            structuredHtml += '</div>';
-
-            const answers = keyPart.split('\n').filter(line => line.trim() !== '');
-            structuredHtml += '<div class="worksheet-section" id="gap-fill-answers"><h3>Answer Key</h3>';
-            structuredHtml += '<ol>';
-            answers.forEach((answerLine) => {
-                const cleanedAnswer = answerLine.replace(/^\d+\.\s*/, '').trim();
-                if (cleanedAnswer) {
-                    structuredHtml += `<li>${cleanedAnswer}</li>`;
-                }
-            });
-            structuredHtml += '</ol></div>';
-
-            // console.log("Finished parsing Gap Fill.");
-            return structuredHtml;
         }
 
-        // Function to parse Comprehension Questions text
-        function parseAndStructureQuestions(rawText) {
-            // console.log("Parsing Questions Text:", rawText.substring(0, 100) + "...");
-            const questions = rawText.split('\n').filter(line => line.trim() !== '');
-            let structuredHtml = '<div class="worksheet-section" id="comprehension-questions"><h3>Comprehension Questions</h3>';
-            structuredHtml += '<ol>';
-            questions.forEach((questionLine) => {
-                const cleanedQuestion = questionLine.replace(/^\d+\.\s*/, '').trim();
-                if (cleanedQuestion) {
-                    structuredHtml += `<li>${cleanedQuestion}</li>`;
-                }
-            });
-            structuredHtml += '</ol></div>';
+        // ** FIXED handleModeChange Function **
+        function handleModeChange() {
+            // Hide all input sections first
+            gapFillInputsDiv.classList.add('hidden');
+            youtubeInputsDiv.classList.add('hidden');
+            mcqInputsDiv.classList.add('hidden');
+            trueFalseInputsDiv.classList.add('hidden');
+            shortAnswerInputsDiv.classList.add('hidden');
+            textBlockInputsDiv.classList.add('hidden');
 
-            // console.log("Finished parsing Questions.");
-            return structuredHtml;
+            // Show the selected one
+            if (modeYoutubeRadio.checked) { youtubeInputsDiv.classList.remove('hidden'); }
+            else if (modeMcqRadio.checked) { mcqInputsDiv.classList.remove('hidden'); } // Fixed: remove hidden
+            else if (modeTrueFalseRadio.checked) { trueFalseInputsDiv.classList.remove('hidden'); }
+            else if (modeShortAnswerRadio.checked) { shortAnswerInputsDiv.classList.remove('hidden'); }
+            else if (modeTextBlockRadio.checked) { textBlockInputsDiv.classList.remove('hidden'); handleTbCheckboxChange(); } // Fixed: remove hidden & call checkbox handler
+            else { gapFillInputsDiv.classList.remove('hidden'); } // Default is Gap Fill
+
+            // Reset output and buttons
+            itemPreviewArea.innerHTML = 'Enter details for the selected mode and click Generate.';
+            toggleEditButton.disabled = true; saveButton.disabled = true;addToSheetButton.disabled = true; toggleEditButton.textContent = 'Enable Editing';
+            if (isEditingEnabled) { itemPreviewArea.style.border = '1px solid #ccc'; isEditingEnabled = false; }
         }
 
-        // --- Event Listeners ---
+        // --- Parsing Functions (Keep all 6 definitions) ---
+        function parseAndStructureGapFill(rawText) { /* ... Full function ... */
+             const keyIdentifier = "Answer Key:"; const keyIndex = rawText.search(new RegExp(`^${keyIdentifier.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}\\s*`, 'im')); let contentPart = rawText; let keyPart = ""; let structuredHtml = "";
+            if (keyIndex !== -1) { contentPart = rawText.substring(0, keyIndex).trim(); keyPart = rawText.substring(keyIndex + keyIdentifier.length).trim(); } else { console.warn("Could not find 'Answer Key:' separator."); return `<div class="worksheet-section"><h3>Worksheet (Format Issue?)</h3><div>${contentPart.replace(/\n/g, '<br>')}</div></div>`; }
+            const sentences = contentPart.split('\n').filter(line => line.trim() !== ''); structuredHtml += '<div class="worksheet-section" id="gap-fill-sentences"><h3>Worksheet Sentences</h3>'; sentences.forEach((sentence, index) => { structuredHtml += `<p data-index="${index}">${sentence.trim()}</p>`; }); structuredHtml += '</div>';
+            const answers = keyPart.split('\n').filter(line => line.trim() !== ''); structuredHtml += '<div class="worksheet-section" id="gap-fill-answers"><h3>Answer Key</h3><ol>'; answers.forEach((answerLine) => { const cleanedAnswer = answerLine.replace(/^\d+\.\s*/, '').trim(); if (cleanedAnswer) { structuredHtml += `<li>${cleanedAnswer}</li>`; } }); structuredHtml += '</ol></div>'; return structuredHtml;
+         }
+        function parseAndStructureQuestions(rawText) { /* ... Full function ... */
+             const questions = rawText.split('\n').filter(line => line.trim() !== ''); let structuredHtml = '<div class="worksheet-section" id="comprehension-questions"><h3>Comprehension Questions</h3><ol>'; questions.forEach((questionLine) => { const cleanedQuestion = questionLine.replace(/^\d+\.\s*/, '').trim(); if (cleanedQuestion) { structuredHtml += `<li>${cleanedQuestion}</li>`; } }); structuredHtml += '</ol></div>'; return structuredHtml;
+        }
+        function parseAndStructureMCQ(rawText) { /* ... Full function ... */
+            const keyIdentifier = "Answer Key:"; const keyIndex = rawText.search(new RegExp(`^${keyIdentifier.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}\\s*`, 'im')); let questionsPart = rawText; let keyPart = ""; let structuredHtml = "";
+            if (keyIndex !== -1) { questionsPart = rawText.substring(0, keyIndex).trim(); keyPart = rawText.substring(keyIndex + keyIdentifier.length).trim(); } else { console.warn("Could not find 'Answer Key:' separator for MCQs."); return `<div class="worksheet-section"><h3>Questions (Format Issue?)</h3><div>${questionsPart.replace(/\n/g, '<br>')}</div></div>`; }
+            structuredHtml += '<div class="worksheet-section" id="mcq-questions"><h3>Multiple Choice Questions</h3>'; const lines = questionsPart.split('\n').filter(line => line.trim() !== ''); let currentQuestionNumber = 0;
+            lines.forEach(line => { line = line.trim(); const questionMatch = line.match(/^(\d+)\.\s*(.*)/); const optionMatch = line.match(/^[A-D]\.\s*(.*)/i); if (questionMatch) { currentQuestionNumber = parseInt(questionMatch[1], 10); if (currentQuestionNumber > 1) { structuredHtml += '</ul>'; } structuredHtml += `<p><strong>${questionMatch[1]}. ${questionMatch[2]}</strong></p><ul style="list-style: upper-alpha; margin-left: 20px;">`; } else if (optionMatch) { structuredHtml += `<li>${optionMatch[1]}</li>`; } else if (line) { structuredHtml += `<div>${line}</div>`; } }); if (currentQuestionNumber > 0) { structuredHtml += '</ul>'; } structuredHtml += '</div>';
+            const answers = keyPart.split('\n').filter(line => line.trim() !== ''); structuredHtml += '<div class="worksheet-section" id="mcq-answers"><h3>Answer Key</h3><ol>'; answers.forEach((answerLine) => { const cleanedAnswer = answerLine.trim().replace(/^\d+\.\s*/, ''); if(cleanedAnswer) { structuredHtml += `<li>${cleanedAnswer}</li>`; } }); structuredHtml += '</ol></div>'; return structuredHtml;
+         }
+        function parseAndStructureTrueFalse(rawText) { /* ... Full function ... */
+            const keyIdentifier = "Answer Key:"; const keyIndex = rawText.search(new RegExp(`^${keyIdentifier.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}\\s*`, 'im')); let statementsPart = rawText; let keyPart = ""; let structuredHtml = "";
+            if (keyIndex !== -1) { statementsPart = rawText.substring(0, keyIndex).trim(); keyPart = rawText.substring(keyIndex + keyIdentifier.length).trim(); } else { console.warn("Could not find 'Answer Key:' separator for True/False."); return `<div class="worksheet-section"><h3>Statements (Format Issue?)</h3><div>${statementsPart.replace(/\n/g, '<br>')}</div></div>`; }
+            const statements = statementsPart.split('\n').filter(line => line.trim() !== ''); structuredHtml += '<div class="worksheet-section" id="tf-statements"><h3>True/False Statements</h3><ol>'; statements.forEach((statementLine) => { const cleanedStatement = statementLine.replace(/^\d+\.\s*/, '').trim(); if (cleanedStatement) { structuredHtml += `<li>${cleanedStatement}</li>`; } }); structuredHtml += '</ol></div>';
+            const answers = keyPart.split('\n').filter(line => line.trim() !== ''); structuredHtml += '<div class="worksheet-section" id="tf-answers"><h3>Answer Key</h3><ol>'; answers.forEach((answerLine) => { const cleanedAnswer = answerLine.trim().replace(/^\d+\.\s*/, ''); if(cleanedAnswer) { structuredHtml += `<li>${cleanedAnswer}</li>`; } }); structuredHtml += '</ol></div>'; return structuredHtml;
+        }
+        function parseAndStructureShortAnswer(rawText) { /* ... Full function ... */
+            const keyIdentifier = "Answer Key:"; const keyIndex = rawText.search(new RegExp(`^${keyIdentifier.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}\\s*`, 'im')); let questionsPart = rawText; let keyPart = ""; let structuredHtml = "";
+            if (keyIndex !== -1) { questionsPart = rawText.substring(0, keyIndex).trim(); keyPart = rawText.substring(keyIndex + keyIdentifier.length).trim(); } else { console.warn("Could not find 'Answer Key:' separator for Short Answer."); keyPart = ""; }
+            const questions = questionsPart.split('\n').filter(line => line.trim() !== ''); structuredHtml += '<div class="worksheet-section" id="sa-questions"><h3>Short Answer Questions</h3><ol>'; questions.forEach((questionLine) => { const cleanedQuestion = questionLine.replace(/^\d+\.\s*/, '').trim(); if (cleanedQuestion) { structuredHtml += `<li style="margin-bottom: 1.5em;">${cleanedQuestion}<br><span style="color: #999;">Answer: _______________</span></li>`; } }); structuredHtml += '</ol></div>';
+            if (keyPart) { const answerLines = keyPart.split('\n').filter(line => line.trim() !== ''); structuredHtml += '<div class="worksheet-section" id="sa-answers"><h3>Answer Key / Grading Points</h3><ol>'; let currentAnswerContent = ''; let currentQuestionNumber = null; answerLines.forEach((line, index) => { line = line.trim(); const numberMatch = line.match(/^(\d+)\.\s*(.*)/); if (numberMatch) { const questionNum = parseInt(numberMatch[1], 10); const content = numberMatch[2].trim(); if (currentAnswerContent) { structuredHtml += `<li>${currentAnswerContent.trim()}</li>`; } currentQuestionNumber = questionNum; currentAnswerContent = content; } else if (currentQuestionNumber !== null && line) { currentAnswerContent += `<br>   ${line}`; } if (index === answerLines.length - 1 && currentAnswerContent) { structuredHtml += `<li>${currentAnswerContent.trim()}</li>`; } }); structuredHtml += '</ol></div>'; }
+            return structuredHtml;
+        }
+        function parseAndStructureTextBlock(rawText) { /* ... Full function ... */
+             const formattedText = rawText.replace(/\n/g, '<br>'); let structuredHtml = `<div class="worksheet-section" id="text-block-generated"><h3>Text Block</h3><div>${formattedText}</div></div>`; return structuredHtml;
+         }
+        // --- END OF PARSING FUNCTIONS ---
 
-        // Listener for Mode Radio Buttons
+
+        // --- Event Listeners (Consolidated) ---
         modeGapFillRadio.addEventListener('change', handleModeChange);
         modeYoutubeRadio.addEventListener('change', handleModeChange);
-// --- LOAD LIBRARY BUTTON LISTENER ---
-loadLibraryButton.addEventListener('click', async () => {
-    libraryOutput.innerHTML = '<div class="loading">Loading library...</div>';
-    loadLibraryButton.disabled = true;
+        modeMcqRadio.addEventListener('change', handleModeChange);
+        modeTrueFalseRadio.addEventListener('change', handleModeChange);
+        modeShortAnswerRadio.addEventListener('change', handleModeChange);
+        modeTextBlockRadio.addEventListener('change', handleModeChange);
+        tbGenerateTextCheckbox.addEventListener('change', handleTbCheckboxChange); // Listener for TextBlock checkbox
 
-    try {
-        const response = await fetch('/list_items'); // GET request by default
-        const data = await response.json();
+        generateButton.addEventListener('click', async () => {
+            // --- Declare ALL potential payload variables OUTSIDE the blocks ---
+            let fetchUrl = '';
+            let payload = {}; // Initialize empty, will be built later
+            let isValid = true;
+            let useDirectText = false;
+            const selectedMode = document.querySelector('input[name="generatorMode"]:checked').value;
 
-        if (!response.ok || data.status !== 'success') {
-            throw new Error(data.message || `HTTP error! Status: ${response.status}`);
-        }
+            // Variables for payload - initialize to null or default
+            let topic = null;
+            let gradeLevel = null;
+            let numQuestions = null;
+            let numStatements = null;
+            let youtubeUrl = null;
 
-        // --- Display the list ---
-        if (data.items && data.items.length > 0) {
-            libraryOutput.innerHTML = ''; // Clear previous content
-            const list = document.createElement('ul');
-            list.style.listStyle = 'none'; // Remove default bullets
-            list.style.padding = '0';
+            // --- Reset UI ---
+            itemPreviewArea.innerHTML = '<div class="loading">Generating... Please wait.</div>';
+            generateButton.disabled = true; toggleEditButton.disabled = true; saveButton.disabled = true;addToSheetButton.disabled = true; toggleEditButton.textContent = 'Enable Editing';
+            if (isEditingEnabled) { itemPreviewArea.style.border = '1px solid #ccc'; isEditingEnabled = false; }
 
-            data.items.forEach(item => {
-                const listItem = document.createElement('li');
-                listItem.style.borderBottom = '1px dashed #eee';
-                listItem.style.marginBottom = '10px';
-                listItem.style.paddingBottom = '10px';
+            // --- Prepare fetchUrl and Assign outer variables based on mode & Validate ---
+            if (selectedMode === 'gapFill') {
+                topic = topicInput.value.trim(); // Assign to outer 'topic'
+                gradeLevel = gradeLevelSelect.value; // Assign to outer 'gradeLevel'
+                if (!topic) { itemPreviewArea.innerHTML = '<p style="color: red;">Please enter a topic.</p>'; isValid = false; }
+                else { fetchUrl = '/generate_worksheet'; } // Only set fetchUrl
+            } else if (selectedMode === 'youtube') {
+                youtubeUrl = youtubeUrlInput.value.trim(); // Assign to outer 'youtubeUrl'
+                numQuestions = parseInt(numQuestionsInput.value, 10) || 5; // Assign to outer 'numQuestions'
+                // gradeLevel remains null for this mode
+                if (!youtubeUrl) { /*...*/ isValid = false; }
+                else if (!youtubeUrl.toLowerCase().includes('youtube.com/') && !youtubeUrl.toLowerCase().includes('youtu.be/')) { /*...*/ isValid = false; }
+                else if (numQuestions < 2 || numQuestions > 20) { /*...*/ isValid = false; }
+                else { fetchUrl = '/generate_comprehension'; } // Only set fetchUrl
+            } else if (selectedMode === 'mcq') {
+                topic = mcqTopicInput.value.trim(); // Assign to outer 'topic'
+                gradeLevel = mcqGradeLevelSelect.value; // Assign to outer 'gradeLevel'
+                numQuestions = parseInt(mcqNumQuestionsInput.value, 10) || 5; // Assign to outer 'numQuestions'
+                if (!topic) { /*...*/ isValid = false; }
+                else if (numQuestions < 2 || numQuestions > 15) { /*...*/ isValid = false; }
+                else { fetchUrl = '/generate_mcq'; } // Only set fetchUrl
+            } else if (selectedMode === 'trueFalse') {
+                topic = tfTopicInput.value.trim(); // Assign to outer 'topic'
+                gradeLevel = tfGradeLevelSelect.value; // Assign to outer 'gradeLevel'
+                numStatements = parseInt(tfNumStatementsInput.value, 10) || 8; // Assign to outer 'numStatements'
+                if (!topic) { /*...*/ isValid = false; }
+                else if (numStatements < 3 || numStatements > 20) { /*...*/ isValid = false; }
+                else { fetchUrl = '/generate_true_false'; } // Only set fetchUrl
+            } else if (selectedMode === 'shortAnswer') {
+                topic = saTopicInput.value.trim(); // Assign to outer 'topic'
+                gradeLevel = saGradeLevelSelect.value; // Assign to outer 'gradeLevel'
+                numQuestions = parseInt(saNumQuestionsInput.value, 10) || 5; // Assign to outer 'numQuestions'
+                if (!topic) { /*...*/ isValid = false; }
+                else if (numQuestions < 2 || numQuestions > 10) { /*...*/ isValid = false; }
+                else { fetchUrl = '/generate_short_answer'; } // Only set fetchUrl
+            } else if (selectedMode === 'textBlock') {
+                const generate = tbGenerateTextCheckbox.checked;
+                topic = tbTopicInput.value.trim(); // Assign to outer 'topic'
+                gradeLevel = tbGradeLevelSelect.value; // Assign to outer 'gradeLevel'
+                const directText = tbDirectInput.value.trim();
+                if (generate && !topic) { /*...*/ isValid = false; }
+                else if (!generate && !directText) { /*...*/ isValid = false; }
+                else { if (generate) { fetchUrl = '/generate_text_block'; } else { useDirectText = true; } }
+            }
+            // --- End of Prepare / Validate ---
 
-                // Basic display - improve later with buttons to load/delete
-                let description = `Type: ${item.item_type}`;
-                if(item.source_topic) description += `, Topic: ${item.source_topic}`;
-                if(item.source_url) description += `, URL: ${item.source_url}`;
-                description += `, Grade: ${item.grade_level}`;
+            // Display validation errors if any occurred
+            if (!isValid) {
+                 if (!itemPreviewArea.innerHTML.includes('color: red')) { itemPreviewArea.innerHTML = '<p style="color: red;">Please check your inputs.</p>'; }
+                 generateButton.disabled = false; return;
+            }
 
-                listItem.innerHTML = `
-                    <strong>ID: ${item.id}</strong> - ${description} <br>
-                    <small>Last Modified: ${new Date(item.last_modified).toLocaleString()}</small>
-                    <button data-item-id="${item.id}" class="load-item-button" style="margin-left: 15px; padding: 2px 8px; font-size: 0.8em;">Load</button>
-                `;
-                list.appendChild(listItem);
-            });
-            libraryOutput.appendChild(list);
-        } else {
-            libraryOutput.innerHTML = '<p>No saved items found in the library.</p>';
-        }
+            // Handle Direct Text case (no API call)
+            if (useDirectText) {
+                 console.log("Using direct text input.");
+                 const directTextContent = tbDirectInput.value;
+                 itemPreviewArea.innerHTML = `<div class="worksheet-section" id="text-block-direct"><h3>Text Block</h3><div>${directTextContent.replace(/\n/g, '<br>')}</div></div>`;
+                 toggleEditButton.disabled = false; saveButton.disabled = false; isEditingEnabled = false; toggleEditButton.textContent = 'Enable Editing'; saveButton.textContent = 'Save to Library';
+                 generateButton.disabled = false; return; // Exit listener early
+            }
 
-    } catch (error) {
-        console.error("Error loading library:", error);
-        libraryOutput.innerHTML = `<p style="color: red;">Error loading library: ${error.message}</p>`;
-    } finally {
-        loadLibraryButton.disabled = false;
+            // *** Build the Payload Object AFTER the if/else if chain ***
+            if (fetchUrl) {
+                 payload = { item_type: selectedMode }; // Start with common field
+
+                 // Add fields conditionally based on the outer variables
+                 if (topic !== null) payload.topic = topic;
+                 if (gradeLevel !== null) payload.grade_level = gradeLevel; // Now uses outer gradeLevel
+                 if (youtubeUrl !== null) payload.youtube_url = youtubeUrl;
+                 if (numQuestions !== null) payload.num_questions = numQuestions;
+                 if (numStatements !== null) payload.num_statements = numStatements;
+
+                 // --- Make API Call ---
+                 try {
+                    console.log(`Fetching ${fetchUrl} with final payload:`, payload); // Log final payload
+                    const response = await fetch(fetchUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', },
+                        body: JSON.stringify(payload) // Stringify the final payload
+                    });
+
+                    const data = await response.json();
+                    console.log('Raw data received from backend:', data);
+
+                    if (!response.ok) { throw new Error(data.message || `HTTP error! status: ${response.status}`); }
+
+                    if (data.status === 'success') {
+                        let rawContent = ''; let outputHtml = '';
+                        // --- Response Handling (Unchanged from previous correct version) ---
+                        if (selectedMode === 'gapFill' && data.worksheet_content) { rawContent = data.worksheet_content; outputHtml = parseAndStructureGapFill(rawContent); }
+                        else if (selectedMode === 'youtube' && data.comprehension_questions) { rawContent = data.comprehension_questions; outputHtml = parseAndStructureQuestions(rawContent); }
+                        else if (selectedMode === 'mcq' && data.mcq_content) { rawContent = data.mcq_content; outputHtml = parseAndStructureMCQ(rawContent); }
+                        else if (selectedMode === 'trueFalse' && data.true_false_content) { rawContent = data.true_false_content; outputHtml = parseAndStructureTrueFalse(rawContent); }
+                        else if (selectedMode === 'shortAnswer' && data.short_answer_content) { rawContent = data.short_answer_content; outputHtml = parseAndStructureShortAnswer(rawContent); }
+                        else if (selectedMode === 'textBlock' && data.text_block_content) { rawContent = data.text_block_content; outputHtml = parseAndStructureTextBlock(rawContent); tbDirectInput.value = rawContent; }
+                        else { console.error("Success status but missing expected content key.", data); throw new Error('Generation succeeded but expected content key was not found.'); }
+
+                        itemPreviewArea.innerHTML = outputHtml; // Display result
+                        toggleEditButton.disabled = false; saveButton.disabled = false;addToSheetButton.disabled = false; isEditingEnabled = false; toggleEditButton.textContent = 'Enable Editing'; saveButton.textContent = 'Save to Library';
+                     
+                    } else { console.error("Backend returned status !== 'success'", data); throw new Error(data.message || 'Generation failed on the server.'); }
+                 } catch (error) {
+                    console.error('Error during generation fetch/processing:', error);
+                    itemPreviewArea.innerHTML = `<p style="color: red;">Error: ${error.message}. Check console for details.</p>`;
+                    toggleEditButton.disabled = true; saveButton.disabled = true; addToSheetButton.disabled = true;// Keep buttons disabled on error
+                 } finally {
+                    generateButton.disabled = false; // Always re-enable Generate button
+                 }
+            } else if (isValid) {
+                // This case should ideally not be reached if validation is correct
+                console.warn("Validation passed but no fetch URL determined.");
+                generateButton.disabled = false;
+            }
+        }); // <-- End of generateButton listener 
+        // End of generateButton listener
+
+        toggleEditButton.addEventListener('click', () => { /* ... Keep unchanged ... */
+             isEditingEnabled = !isEditingEnabled; const contentElements = itemPreviewArea.querySelectorAll('.worksheet-section p, .worksheet-section li'); if (isEditingEnabled) { toggleEditButton.textContent = 'Disable Editing'; saveButton.disabled = true; contentElements.forEach(el => { el.contentEditable = true; el.classList.add('editable-content'); }); itemPreviewArea.style.border = '2px solid blue'; console.log("Editing enabled."); } else { toggleEditButton.textContent = 'Enable Editing'; saveButton.disabled = false; contentElements.forEach(el => { el.contentEditable = false; el.classList.remove('editable-content'); }); itemPreviewArea.style.border = '1px solid #ccc'; console.log("Editing disabled."); }
+        });
+
+        saveButton.addEventListener('click', async () => { /* ... Keep unchanged ... */
+             if (isEditingEnabled) { alert("Please disable editing before saving."); return; } const selectedMode = document.querySelector('input[name="generatorMode"]:checked').value; let source_topic = null; let source_url = null; let grade_level = null; let isValidMeta = true;
+            if (selectedMode === 'gapFill') { source_topic = topicInput.value.trim(); grade_level = gradeLevelSelect.value; if (!source_topic) { alert("Cannot save without topic."); isValidMeta = false; } }
+            else if (selectedMode === 'youtube') { source_url = youtubeUrlInput.value.trim(); grade_level = "mixed"; if (!source_url) { alert("Cannot save without YouTube URL."); isValidMeta = false; } }
+            else if (selectedMode === 'mcq') { source_topic = mcqTopicInput.value.trim(); grade_level = mcqGradeLevelSelect.value; if (!source_topic) { alert("Cannot save without topic."); isValidMeta = false; } }
+            else if (selectedMode === 'trueFalse') { source_topic = tfTopicInput.value.trim(); grade_level = tfGradeLevelSelect.value; if (!source_topic) { alert("Cannot save without topic."); isValidMeta = false; } }
+            else if (selectedMode === 'shortAnswer') { source_topic = saTopicInput.value.trim(); grade_level = saGradeLevelSelect.value; if (!source_topic) { alert("Cannot save without topic."); isValidMeta = false; } }
+            else if (selectedMode === 'textBlock') { source_topic = tbTopicInput.value.trim(); grade_level = tbGradeLevelSelect.value; } else { alert("Unknown mode selected for saving."); isValidMeta = false; }
+            if (!isValidMeta) { return; } const content_html = itemPreviewArea.innerHTML; if (!content_html || content_html.includes('click Generate') || content_html.includes('<div class="loading">')) { alert("Cannot save empty or placeholder content."); return; } const payload = { item_type: selectedMode, source_topic, source_url, grade_level, content_html }; console.log("Saving payload:", payload); saveButton.disabled = true; saveButton.textContent = 'Saving...'; try { const response = await fetch('/save_item', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); const result = await response.json(); if (!response.ok || result.status !== 'success') { throw new Error(result.message || `HTTP error! status: ${response.status}`); } alert("Item saved successfully!"); saveButton.textContent = 'Saved!'; } catch (error) { console.error("Error saving item:", error); alert(`Error saving item: ${error.message}`); saveButton.textContent = 'Save to Library'; saveButton.disabled = false; }
+        });
+
+        loadLibraryButton.addEventListener('click', async () => { /* ... Keep unchanged ... */
+             libraryOutput.innerHTML = '<div class="loading">Loading library...</div>'; loadLibraryButton.disabled = true; try { const response = await fetch('/list_items'); const data = await response.json(); if (!response.ok || data.status !== 'success') { throw new Error(data.message || `HTTP error! Status: ${response.status}`); } if (data.items && data.items.length > 0) { libraryOutput.innerHTML = ''; const list = document.createElement('ul'); list.style.listStyle = 'none'; list.style.padding = '0'; data.items.forEach(item => { const listItem = document.createElement('li'); let description = `Type: ${item.item_type}`; if(item.source_topic) description += `, Topic: ${item.source_topic}`; if(item.source_url) description += `, URL: <small>${item.source_url}</small>`; description += `, Grade: ${item.grade_level}`; listItem.innerHTML = `<strong>ID: ${item.id}</strong> - ${description} <br><small>Last Modified: ${new Date(item.last_modified).toLocaleString()}</small><button data-item-id="${item.id}" class="load-item-button" style="margin-left: 15px; padding: 2px 8px; font-size: 0.8em;">Load Item</button>`; list.appendChild(listItem); }); libraryOutput.appendChild(list); } else { libraryOutput.innerHTML = '<p>No saved items found in the library.</p>'; } } catch (error) { console.error("Error loading library:", error); libraryOutput.innerHTML = `<p style="color: red;">Error loading library: ${error.message}</p>`; } finally { loadLibraryButton.disabled = false; }
+        });
+        addToSheetButton.addEventListener('click', () => {
+    console.log("Add to Sheet button clicked.");
+    // Ensure editing is off before adding
+    if (isEditingEnabled) {
+        alert("Please disable editing before adding the item to the worksheet.");
+        return;
+    }
+
+    // Get the HTML content from the preview area
+    const previewContent = itemPreviewArea.innerHTML;
+
+    // Check if the preview content is valid (not empty, loading, or placeholder)
+    if (!previewContent || previewContent.trim() === '' || previewContent.includes('will appear here') || previewContent.includes('<div class="loading">')) {
+        alert("No valid item in the preview area to add.");
+        return;
+    }
+
+    // --- Create a wrapper div for the item on the worksheet ---
+    const worksheetItem = document.createElement('div');
+    worksheetItem.classList.add('worksheet-item'); // For potential future styling/identification
+    // Add some basic inline styles for visibility for now
+    worksheetItem.style.border = '1px solid #a0a0a0';
+    worksheetItem.style.padding = '15px';
+    worksheetItem.style.marginBottom = '15px';
+    worksheetItem.style.backgroundColor = 'white';
+    worksheetItem.style.overflow = 'hidden'; // Contains floats
+
+    // --- Add controls to the item (e.g., Remove button) ---
+    const controlsDiv = document.createElement('div');
+    controlsDiv.style.marginBottom = '10px'; // Space below controls
+
+    const removeButton = document.createElement('button');
+    removeButton.textContent = 'Remove';
+    removeButton.style.float = 'right';
+    removeButton.style.backgroundColor = '#dc3545'; // Red color
+    removeButton.style.color = 'white';
+    removeButton.style.padding = '3px 8px'; // Smaller padding
+    removeButton.style.fontSize = '0.8em'; // Smaller font
+
+    // Define what happens when the remove button is clicked
+    removeButton.onclick = () => {
+         worksheetItem.remove(); // Remove the entire item div
+         console.log("Worksheet item removed.");
+         // Check if assembly area is empty after removal to restore placeholder
+         if (worksheetAssemblyArea.querySelectorAll('.worksheet-item').length === 0) {
+              worksheetAssemblyArea.innerHTML = '<p style="color: grey; font-style: italic;">Items added to the worksheet will appear here.</p>';
+         }
+    };
+    controlsDiv.appendChild(removeButton); // Add button to controls div
+    // Add other controls (like move up/down) here later if needed
+
+    // Add controls div to the top of the item wrapper
+    worksheetItem.appendChild(controlsDiv);
+
+    // --- Add the actual content from the preview ---
+    const contentDiv = document.createElement('div');
+    contentDiv.style.clear = 'both'; // Ensure content clears floated button
+    contentDiv.innerHTML = previewContent; // Put the preview HTML inside this div
+    worksheetItem.appendChild(contentDiv); // Add content div to the item wrapper
+
+
+    // --- Append the complete item to the Assembly Area ---
+    // Clear placeholder text if it's the first item being added
+    const placeholder = worksheetAssemblyArea.querySelector('p');
+    if (placeholder && placeholder.textContent.includes('Items added to the worksheet')) {
+         worksheetAssemblyArea.innerHTML = ''; // Clear the placeholder
+    }
+    worksheetAssemblyArea.appendChild(worksheetItem); // Add the new item
+
+    console.log("Item appended to worksheet assembly area.");
+
+    // Optional: Clear preview area and disable buttons after adding?
+    // itemPreviewArea.innerHTML = 'Item added to worksheet below. Generate or load another.';
+    // toggleEditButton.disabled = true;
+    // saveButton.disabled = true;
+    // addToSheetButton.disabled = true;
+});
+
+        libraryOutput.addEventListener('click', async (event) => { /* ... Keep unchanged ... */
+             if (event.target.classList.contains('load-item-button')) { const button = event.target; const itemId = button.dataset.itemId; if (!itemId) { console.error("Load button clicked but item ID is missing."); return; } console.log(`Load button clicked for item ID: ${itemId}`); libraryOutput.querySelectorAll('.load-item-button').forEach(btn => btn.disabled = true); itemPreviewArea.innerHTML = '<div class="loading">Loading item...</div>'; toggleEditButton.disabled = true; saveButton.disabled = true;addToSheetButton.disabled = true; try { const response = await fetch(`/get_item/${itemId}`); const data = await response.json(); if (!response.ok || data.status !== 'success') { throw new Error(data.message || `HTTP error! Status: ${response.status}`); } if (data.item && data.item.content_html) { itemPreviewArea.innerHTML = data.item.content_html; toggleEditButton.disabled = false; saveButton.disabled = false; isEditingEnabled = false; toggleEditButton.textContent = 'Enable Editing'; saveButton.textContent = 'Save to Library'; itemPreviewArea.scrollIntoView({ behavior: 'smooth', block: 'start' }); console.log(`Successfully loaded item ${itemId} into editor.`); } else { throw new Error("Item data received successfully, but content_html was missing."); } } catch (error) { console.error(`Error loading item ${itemId}:`, error); itemPreviewArea.innerHTML = `<p style="color: red;">Error loading item: ${error.message}</p>`; toggleEditButton.disabled = true; saveButton.disabled = true;addToSheetButton.disabled = true; } finally { libraryOutput.querySelectorAll('.load-item-button').forEach(btn => btn.disabled = false); } }
+        });
+        clearSheetButton.addEventListener('click', () => {
+    // Ask for confirmation
+    if (confirm("Are you sure you want to clear all items from the worksheet assembly area?")) {
+        // Reset the innerHTML to the placeholder text
+        worksheetAssemblyArea.innerHTML = '<p style="color: grey; font-style: italic;">Items added to the worksheet will appear here.</p>';
+        console.log("Worksheet assembly area cleared.");
     }
 });
-// --- END OF LOAD LIBRARY LISTENER ---
-        // Listener for Generate Button
-        generateButton.addEventListener('click', async () => {
-            let fetchUrl = '';
-            let payload = {};
-            let isValid = true;
-            const selectedMode = document.querySelector('input[name="generatorMode"]:checked').value;
-
-            // Reset state and disable buttons
-            worksheetOutput.innerHTML = '<div class="loading">Generating... Please wait.</div>';
-            generateButton.disabled = true;
-            toggleEditButton.disabled = true;
-            saveButton.disabled = true;
-            toggleEditButton.textContent = 'Enable Editing'; // Reset button text
-             if (isEditingEnabled) { // Reset editing state if active
-                 worksheetOutput.style.border = '1px solid #ccc';
-                 isEditingEnabled = false;
-             }
-
-
-            // --- Prepare payload based on mode & Validate ---
-            if (selectedMode === 'gapFill') {
-                const topic = topicInput.value.trim();
-                const gradeLevel = gradeLevelSelect.value;
-                if (!topic) {
-                    worksheetOutput.innerHTML = '<p style="color: red;">Please enter a topic.</p>';
-                    isValid = false;
-                } else {
-                    fetchUrl = '/generate_worksheet';
-                    payload = { topic: topic, grade_level: gradeLevel };
-                }
-            } else { // youtube mode
-                const youtubeUrl = youtubeUrlInput.value.trim();
-                const numQuestions = parseInt(numQuestionsInput.value, 10) || 5;
-
-                if (!youtubeUrl) {
-                    worksheetOutput.innerHTML = '<p style="color: red;">Please enter a YouTube URL.</p>';
-                    isValid = false;
-                } else if (!youtubeUrl.toLowerCase().includes('youtube.com/') && !youtubeUrl.toLowerCase().includes('youtu.be/')) {
-                     worksheetOutput.innerHTML = '<p style="color: red;">Please enter a valid YouTube URL.</p>';
-                     isValid = false;
-                } else if (numQuestions < 2 || numQuestions > 20) {
-                     worksheetOutput.innerHTML = '<p style="color: red;">Please enter a number of questions between 2 and 20.</p>';
-                     isValid = false;
-                } else {
-                    fetchUrl = '/generate_comprehension';
-                    payload = { youtube_url: youtubeUrl, num_questions: numQuestions };
-                }
-            }
-
-            // If validation failed, re-enable generate button and exit
-            if (!isValid) {
-                generateButton.disabled = false;
-                // Keep Edit and Save disabled
-                return;
-            }
-
-            // --- Make API Call ---
-            try {
-                console.log(`Fetching ${fetchUrl} with payload:`, payload);
-                const response = await fetch(fetchUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', },
-                    body: JSON.stringify(payload)
-                });
-
-                const data = await response.json();
-                console.log('Raw data received from backend:', data);
-
-                if (!response.ok) {
-                    throw new Error(data.message || `HTTP error! status: ${response.status}`);
-                }
-
-                if (data.status === 'success') {
-                    let rawContent = '';
-                    let outputHtml = '';
-
-                    // console.log("Attempting to parse content for mode:", selectedMode);
-
-                    if (selectedMode === 'gapFill' && data.worksheet_content) {
-                        rawContent = data.worksheet_content;
-                        // console.log("Raw Gap Fill Content:", rawContent ? rawContent.substring(0,150)+"..." : "N/A");
-                        outputHtml = parseAndStructureGapFill(rawContent);
-                    } else if (selectedMode === 'youtube' && data.comprehension_questions) {
-                        rawContent = data.comprehension_questions;
-                        // console.log("Raw Questions Content:", rawContent ? rawContent.substring(0,150)+"..." : "N/A");
-                        outputHtml = parseAndStructureQuestions(rawContent);
-                    } else {
-                         console.error("Success status but missing expected content key.", data);
-                         throw new Error('Generation succeeded but expected content key was not found.');
-                    }
-
-                    // console.log("Generated HTML Structure:", outputHtml ? outputHtml.substring(0,200)+"..." : "N/A");
-
-                    // Display the structured HTML
-                    worksheetOutput.innerHTML = outputHtml;
-
-                    // Enable Edit and Save buttons on success
-                    toggleEditButton.disabled = false;
-                    saveButton.disabled = false;
-                    isEditingEnabled = false; // Ensure editing starts disabled
-                    toggleEditButton.textContent = 'Enable Editing';
-
-                } else {
-                     console.error("Backend returned status !== 'success'", data);
-                     throw new Error(data.message || 'Generation failed on the server.');
-                }
-
-            } catch (error) {
-                console.error('Error during generation fetch/processing:', error);
-                worksheetOutput.innerHTML = `<p style="color: red;">Error: ${error.message}. Check console for details.</p>`;
-                // Keep Edit and Save disabled on error
-                toggleEditButton.disabled = true;
-                saveButton.disabled = true;
-            } finally {
-                // Always re-enable Generate button
-                generateButton.disabled = false;
-            }
-        });
-
-
-        // Listener for Edit Button
-        toggleEditButton.addEventListener('click', () => {
-            isEditingEnabled = !isEditingEnabled;
-            const contentElements = worksheetOutput.querySelectorAll('.worksheet-section p, .worksheet-section li');
-
-            if (isEditingEnabled) {
-                toggleEditButton.textContent = 'Disable Editing'; // Simpler text
-                saveButton.disabled = true; // Disable saving while editing
-                contentElements.forEach(el => {
-                    el.contentEditable = true;
-                    el.classList.add('editable-content');
-                });
-                worksheetOutput.style.border = '2px solid blue';
-                console.log("Editing enabled.");
-            } else {
-                toggleEditButton.textContent = 'Enable Editing';
-                saveButton.disabled = false; // Re-enable saving after editing
-                contentElements.forEach(el => {
-                    el.contentEditable = false;
-                    el.classList.remove('editable-content');
-                });
-                worksheetOutput.style.border = '1px solid #ccc';
-                console.log("Editing disabled.");
-            }
-        });
-
-
-        // Listener for Save Button
-        saveButton.addEventListener('click', async () => {
-            if (isEditingEnabled) { // Should not happen if button is disabled, but double-check
-                alert("Please disable editing before saving.");
-                return;
-            }
-
-            const selectedMode = document.querySelector('input[name="generatorMode"]:checked').value;
-            let source_topic = null;
-            let source_url = null;
-            let grade_level = null;
-
-            if (selectedMode === 'gapFill') {
-                source_topic = topicInput.value.trim();
-                grade_level = gradeLevelSelect.value;
-                 if (!source_topic) { alert("Cannot save without topic."); return; } // Add validation
-            } else { // youtube mode
-                source_url = youtubeUrlInput.value.trim();
-                grade_level = "mixed"; // Placeholder - consider adding grade selector for YT later?
-                 if (!source_url) { alert("Cannot save without YouTube URL."); return; } // Add validation
-            }
-
-            const content_html = worksheetOutput.innerHTML;
-            // Check if content is meaningful (not initial message or loading)
-            if (!content_html || content_html.includes('click Generate') || content_html.includes('<div class="loading">')) {
-                alert("Cannot save empty or placeholder content.");
-                return;
-            }
-
-            const payload = {
-                item_type: selectedMode,
-                source_topic: source_topic,
-                source_url: source_url,
-                grade_level: grade_level,
-                content_html: content_html
-            };
-
-            console.log("Saving payload:", payload);
-
-            saveButton.disabled = true;
-            saveButton.textContent = 'Saving...';
-            try {
-                const response = await fetch('/save_item', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                const result = await response.json();
-
-                if (!response.ok || result.status !== 'success') {
-                     throw new Error(result.message || `HTTP error! status: ${response.status}`);
-                }
-
-                alert("Item saved successfully!");
-                saveButton.textContent = 'Saved!'; // Indicate success
-                // Consider maybe disabling Generate/Edit after save until mode change? Or leave enabled.
-
-            } catch (error) {
-                console.error("Error saving item:", error);
-                alert(`Error saving item: ${error.message}`);
-                saveButton.textContent = 'Save to Library'; // Reset text
-                saveButton.disabled = false; // Re-enable on error
-            }
-        });
 
 
         // --- Initialization ---
-        // Set initial visibility based on default checked radio
-        handleModeChange();
+        handleModeChange(); // Call once on load to set initial state
 
     </script>
 </body>
