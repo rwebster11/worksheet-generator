@@ -87,11 +87,9 @@ try:
 
         # Pass the configured httpx client to the Anthropic client
         client = anthropic.Anthropic(
-            api_key=api_key_from_env,
-            http_client=http_client # Pass the configured client
+            api_key=api_key_from_env
         )
-        logging.info("Anthropic client object CREATED successfully (using custom http_client with proxy mounts).")
-        # ... (optional test call) ...
+        logging.info("Anthropic client object CREATED successfully (using default http_client).")
 
 except Exception as e:
     logging.error(f"CRITICAL: Exception during Anthropic client initialization: {e}", exc_info=True)
