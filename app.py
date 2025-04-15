@@ -3,9 +3,9 @@ import anthropic
 # Near other imports
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timezone # Added timezone for UTC awareness
-import os # Make sure os is imported if not already
 from flask import Flask, request, jsonify, send_from_directory
 from dotenv import load_dotenv
+import traceback # Import traceback for detailed error logging
 import logging # Import standard logging
 
 # Configure basic logging early
@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(name
 logging.info("Attempting to load .env file...")
 dotenv_path = os.path.join(os.path.dirname(__file__), '.env') # Explicit path
 found_dotenv = load_dotenv(dotenv_path=dotenv_path, verbose=True) # Be verbose
-logging.info(f".env file found and loaded: {found_dotenv}")import traceback # Import traceback for detailed error logging
+logging.info(f".env file found and loaded: {found_dotenv}")
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 import re # For parsing YouTube URL
 # Load environment variables from .env file
