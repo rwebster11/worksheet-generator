@@ -7,6 +7,7 @@ from flask import Flask, request, jsonify, send_from_directory
 from dotenv import load_dotenv
 import traceback # Import traceback for detailed error logging
 import logging # Import standard logging
+import httpx
 
 # Configure basic logging early
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(name)s:%(message)s')
@@ -70,25 +71,31 @@ try:
     if not api_key_from_env:
         logging.error("CRITICAL: ANTHROPIC_API_KEY not found in environment variables.")
     else:
-        logging.info("ANTHROPIC_API_KEY found. Initializing client...")
+        logging.info("ANTHROPIC_API_KEY found. Configuring client...")
 
-        # *** ADD PROXY CONFIGURATION FOR PYTHONANYWHERE FREE TIER ***
+        # --- CORRECT WAY TO CONFIGURE PROXY for Anthropic library ---
         proxy_url = "http://proxy.server:3128"
-        proxies = {
-            "http": proxy_url,
-            "https": proxy_url,
-        }
+        # Create an httpx client instance with the proxy
+        http_client = httpx.Client(
+            proxies={
+                "http://": proxy_url,  # Use trailing slash for httpx
+                "https://": proxy_url, # Use trailing slash for httpx
+            }
+        )
 
+        # Pass the configured httpx client to the Anthropic client
         client = anthropic.Anthropic(
             api_key=api_key_from_env,
-            proxies=proxies # <-- Pass the proxy configuration here
+            http_client=http_client # <-- Pass the configured httpx client here
         )
-        logging.info("Anthropic client object CREATED successfully (with proxy).")
+        # *** REMOVED the incorrect 'proxies=proxies' argument ***
+
+        logging.info("Anthropic client object CREATED successfully (using custom http_client with proxy).")
         # ... (optional test call) ...
+
 except Exception as e:
-    # Log any exception during the client initialization process
-    logging.error(f"CRITICAL: Exception during Anthropic client initialization: {e}", exc_info=True) # Log traceback too
-    client = None # Ensure client is None on error
+    logging.error(f"CRITICAL: Exception during Anthropic client initialization: {e}", exc_info=True)
+    client = None
 
 # Check client status immediately after initialization block
 if client is None:
