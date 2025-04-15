@@ -6,7 +6,16 @@ from datetime import datetime, timezone # Added timezone for UTC awareness
 import os # Make sure os is imported if not already
 from flask import Flask, request, jsonify, send_from_directory
 from dotenv import load_dotenv
-import traceback # Import traceback for detailed error logging
+import logging # Import standard logging
+
+# Configure basic logging early
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(name)s:%(message)s')
+
+# Load environment variables from .env file
+logging.info("Attempting to load .env file...")
+dotenv_path = os.path.join(os.path.dirname(__file__), '.env') # Explicit path
+found_dotenv = load_dotenv(dotenv_path=dotenv_path, verbose=True) # Be verbose
+logging.info(f".env file found and loaded: {found_dotenv}")import traceback # Import traceback for detailed error logging
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 import re # For parsing YouTube URL
 # Load environment variables from .env file
@@ -53,24 +62,39 @@ class GeneratedItem(db.Model):
 # --- End Database Model Definition ---
 
 # Initialize the Anthropic Client (More robust initialization)
+client = None # Initialize client to None *before* the try block
 try:
-    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-    if not ANTHROPIC_API_KEY:
-        print("Error: ANTHROPIC_API_KEY not found in environment variables.")
-        client = None
+    logging.info("Attempting to initialize Anthropic client...")
+    api_key_from_env = os.getenv("ANTHROPIC_API_KEY")
+
+    if not api_key_from_env:
+        # Log the error clearly if key is missing
+        logging.error("CRITICAL: ANTHROPIC_API_KEY not found in environment variables after load_dotenv.")
+        # client remains None
     else:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        print("Anthropic client initialized successfully.")
-        # Optional: Add a test call here if you want to verify during startup
+        # Log that the key WAS found (don't log the key itself)
+        logging.info("ANTHROPIC_API_KEY found in environment.")
+        # Attempt to initialize
+        client = anthropic.Anthropic(api_key=api_key_from_env)
+        logging.info("Anthropic client object CREATED successfully.")
+        # Optional Test Call (maybe keep commented out for now)
         # try:
-        #     client.messages.create(model="claude-3-haiku-20240307", max_tokens=10, messages=[{"role": "user", "content": "Hello"}])
-        #     print("Test API call successful.")
+        #    client.messages.create(...)
+        #    logging.info("Test API call successful.")
         # except Exception as api_err:
-        #     print(f"Warning: Test API call failed during initialization: {api_err}")
+        #    logging.warning(f"Test API call failed during initialization: {api_err}")
 
 except Exception as e:
-    print(f"Error initializing Anthropic client: {e}")
-    client = None # Ensure client is None if initialization fails
+    # Log any exception during the client initialization process
+    logging.error(f"CRITICAL: Exception during Anthropic client initialization: {e}", exc_info=True) # Log traceback too
+    client = None # Ensure client is None on error
+
+# Check client status immediately after initialization block
+if client is None:
+    logging.warning("Anthropic client is None immediately after initialization block.")
+else:
+    logging.info("Anthropic client appears to be initialized successfully after try/except block.")
+
 
 # Use Opus model as decided previously
 ANTHROPIC_MODEL_NAME = "claude-3-opus-20240229"
@@ -432,57 +456,79 @@ def generate_mcq_route():
 
 # --- End of MCQ Route ---
 # --- Route for Text Block Generation ---
+# --- Route for Text Block Generation ---
 @app.route('/generate_text_block', methods=['POST'])
 def generate_text_block_route():
-    """Handles POST requests to generate a text block."""
     print("Received request at /generate_text_block")
 
-    if client is None: return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
+    # --- Check if client object exists ---
+    if client is None:
+        print("Error condition met: client object is None before processing request.")
+        # This specific message confirms the init failed earlier
+        return jsonify({'status': 'error', 'message': 'Server setup error: AI client object is None.'}), 500
     if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
 
     try:
         data = request.get_json()
         topic = data.get('topic')
         grade_level = data.get('grade_level', 'middle school')
-        focus = data.get('focus') # Optional focus instruction
+        focus = data.get('focus')
 
-        # --- Validation ---
-        if not topic: # Topic is required for generation
-            return jsonify({'status': 'error', 'message': 'Missing "topic" for text generation'}), 400
-
+        if not topic: return jsonify({'status': 'error', 'message': 'Missing "topic" for text generation'}), 400
         print(f"Received Text Block request: Topic='{topic}', Grade='{grade_level}', Focus='{focus}'")
 
         # --- Create Prompt ---
         prompt_content = create_text_block_prompt(topic, grade_level, focus)
 
         # --- Call Anthropic API ---
-        print(f"Sending Text Block request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
-        message = client.messages.create(
-            model=ANTHROPIC_MODEL_NAME,
-            max_tokens=800, # Adjust as needed for text length
-            temperature=0.7,
-            messages=[{ "role": "user", "content": prompt_content }]
-        )
-        print("Received response from Anthropic API.")
+        print("Attempting to call Anthropic API...") # Log before call
+        # *** Add specific Anthropic error catches below ***
+        try:
+            message = client.messages.create(
+                model=ANTHROPIC_MODEL_NAME,
+                max_tokens=800,
+                temperature=0.7,
+                messages=[{ "role": "user", "content": prompt_content }]
+            )
+            print("Received response from Anthropic API successfully.") # Log after successful call
+        except anthropic.AuthenticationError as auth_err:
+             print(f"Anthropic Authentication Error: {auth_err}")
+             # Return a specific error for bad keys
+             return jsonify({'status': 'error', 'message': f'AI Authentication Error: {auth_err}'}), 401 # Unauthorized
+        except anthropic.APIConnectionError as conn_err:
+             print(f"Anthropic Connection Error: {conn_err}")
+             return jsonify({'status': 'error', 'message': f'AI Connection Error: {conn_err}'}), 503 # Service Unavailable
+        except anthropic.RateLimitError as rate_err:
+             print(f"Anthropic Rate Limit Error: {rate_err}")
+             return jsonify({'status': 'error', 'message': 'AI Rate Limit Exceeded.'}), 429
+        except anthropic.APIStatusError as status_err:
+             # Keep the detailed handling for other API status errors
+             print(f"Anthropic API Status Error: Status Code: {status_err.status_code}, Response: {status_err.response}")
+             error_message = f'AI service error (Status {status_err.status_code})'; try: error_details = status_err.response.json(); error_message += f": {error_details.get('error', {}).get('message', status_err.response.text)}"; except Exception: error_message += f": {status_err.response.text}"; return jsonify({'status': 'error', 'message': error_message}), status_err.status_code
+        except Exception as api_call_err: # Catch other errors during the API call itself
+             print(f"Unexpected error DURING Anthropic API call: {api_call_err}")
+             print(traceback.format_exc())
+             return jsonify({'status': 'error', 'message': f'Unexpected error during AI call: {api_call_err}'}), 500
 
-        # --- Extract Result ---
+        # --- Extract Result (only if API call succeeded) ---
         generated_content = ""
-        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
+        if message and message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
             generated_content = message.content[0].text
         else:
-             print(f"Warning: Unexpected API response structure or empty content. Response: {message}"); return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
+             print(f"Warning: Unexpected API response structure or empty content after successful call. Response: {message}"); return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
 
         print(f"Generated Text Block length: {len(generated_content)} chars")
 
-        # --- Return Result (use a distinct key) ---
+        # --- Return Result ---
         return jsonify({
             'status': 'success',
             'text_block_content': generated_content.strip()
         })
 
-    # --- Error Handling ---
+    # --- Catch errors outside the API call itself ---
     except ValueError as ve: print(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
-    except anthropic.APIConnectionError as e: print(f"API Connection Error: {e}"); return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
+    except Exception as e: # General errors in the route logic (e.g., getting JSON data)
+        print(f"An unexpected error occurred in /generate_text_block route logic: {e}"); print(traceback.format_exc()); return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500except anthropic.APIConnectionError as e: print(f"API Connection Error: {e}"); return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
     except anthropic.RateLimitError as e: print(f"API Rate Limit Error: {e}"); return jsonify({'status': 'error', 'message': 'Rate limit exceeded. Please try again later.'}), 429
     except anthropic.APIStatusError as e:
             print(f"API Status Error: Status Code: {e.status_code}, Response: {e.response}")
