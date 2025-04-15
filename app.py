@@ -73,24 +73,24 @@ try:
     else:
         logging.info("ANTHROPIC_API_KEY found. Configuring client...")
 
-        # --- CORRECT WAY TO CONFIGURE PROXY for Anthropic library ---
+        # --- CORRECTED PROXY CONFIG for httpx Client ---
         proxy_url = "http://proxy.server:3128"
-        # Create an httpx client instance with the proxy
-        http_client = httpx.Client(
-            proxies={
-                "http://": proxy_url,  # Use trailing slash for httpx
-                "https://": proxy_url, # Use trailing slash for httpx
-            }
-        )
+        # Mount the proxy for all https and http requests
+        mounts = {
+            "http://": httpx.HTTPTransport(proxy=proxy_url),
+            "https://": httpx.HTTPTransport(proxy=proxy_url)
+        }
+        # Create the httpx client with the mounted proxy transports
+        http_client = httpx.Client(mounts=mounts)
+        # --- END OF CORRECTED PROXY CONFIG ---
+
 
         # Pass the configured httpx client to the Anthropic client
         client = anthropic.Anthropic(
             api_key=api_key_from_env,
-            http_client=http_client # <-- Pass the configured httpx client here
+            http_client=http_client # Pass the configured client
         )
-        # *** REMOVED the incorrect 'proxies=proxies' argument ***
-
-        logging.info("Anthropic client object CREATED successfully (using custom http_client with proxy).")
+        logging.info("Anthropic client object CREATED successfully (using custom http_client with proxy mounts).")
         # ... (optional test call) ...
 
 except Exception as e:
