@@ -528,7 +528,8 @@ def generate_text_block_route():
     # --- Catch errors outside the API call itself ---
     except ValueError as ve: print(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
     except Exception as e: # General errors in the route logic (e.g., getting JSON data)
-        print(f"An unexpected error occurred in /generate_text_block route logic: {e}"); print(traceback.format_exc()); return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500except anthropic.APIConnectionError as e: print(f"API Connection Error: {e}"); return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
+        print(f"An unexpected error occurred in /generate_text_block route logic: {e}"); print(traceback.format_exc()); return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
+    except anthropic.APIConnectionError as e: print(f"API Connection Error: {e}"); return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
     except anthropic.RateLimitError as e: print(f"API Rate Limit Error: {e}"); return jsonify({'status': 'error', 'message': 'Rate limit exceeded. Please try again later.'}), 429
     except anthropic.APIStatusError as e:
             print(f"API Status Error: Status Code: {e.status_code}, Response: {e.response}")
