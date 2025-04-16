@@ -169,26 +169,22 @@ Audience: {grade_level}
 True/False Statements:
 """
     return prompt
-def create_gap_fill_prompt(topic, grade_level="middle school"):
-    """Creates a more forceful prompt emphasizing grade level adaptation."""
-    prompt = f"""You are an expert teacher creating educational resources tailored for a specific audience.
-Your task is to generate a gap-fill (cloze) activity about the topic '{topic}'.
+def create_gap_fill_prompt(topic, grade_level="middle school", num_sentences=7): # Added num_sentences arg with default
+    """Creates the prompt for the Anthropic API to generate a gap-fill worksheet."""
+    prompt = f"""You are an expert teacher creating educational resources.
+Generate a gap-fill (cloze) activity about the topic '{topic}'.
+The target audience is {grade_level} students.
 
-**Target Audience: {grade_level} students.**
-
-**CRITICAL INSTRUCTIONS:**
-1.  **Adapt Content to Audience:** You **MUST** adjust the vocabulary complexity, sentence structure, and depth of concepts presented to be appropriate for **{grade_level} students**. This is a primary requirement.
-    *   For 'elementary school', use very simple terms, short sentences, and focus on the most basic ideas. Explain concepts clearly.
-    *   For 'middle school', use standard, clear language and introduce core concepts accurately.
-    *   For 'high school', use more specific terminology, assume some background knowledge, and employ slightly more complex sentences.
-    *   For 'university' or 'general adult', use precise, potentially academic or professional language, assume significant prior knowledge, and handle nuanced concepts.
-2.  **Sentence Content:** Create 5-10 unique sentences. Each sentence **MUST** focus on a **different** important aspect or key term of the topic '{topic}'. Avoid rephrasing the same core idea.
-3.  **Blank Creation:** In each sentence, identify the single most important key term or concept specific to that sentence's point and replace it with '_________'.
-4.  **Blank Variety:** **Each blank MUST be fillable with a DIFFERENT word.** Do NOT reuse the same answer word for multiple blanks. This is crucial for testing diverse vocabulary. Using the same word in two or more blanks is forbidden.
-5.  **Answer Key:** After the sentences, provide a numbered list titled 'Answer Key:' listing the single word removed for each blank in the correct order.
-6.  **Output Format:** Output ONLY the worksheet sentences and the Answer Key. No introductory phrases, explanations, conversational text, or titles other than 'Answer Key:'.
+**Instructions:**
+1.  Create exactly {num_sentences} unique sentences. Each sentence **MUST** focus on a **different** important aspect or key term of the topic '{topic}'. Do not just rephrase the same core idea.
+2.  In each sentence, identify the single most important key term or concept specific to that sentence's point and replace it with '_________'.
+3.  **CRITICAL REQUIREMENT: Each blank MUST be fillable with a DIFFERENT word.** Do NOT reuse the same answer word for multiple blanks. The goal is to test a variety of key vocabulary related to the topic. Using the exact same word in two or more blanks is forbidden.
+4.  After the sentences, provide a numbered list titled 'Answer Key:' that clearly lists the single word removed for each blank in the correct order.
+5.  Output ONLY the worksheet sentences and the Answer Key. No introductory phrases, explanations, conversational text, or titles other than 'Answer Key:'.
 
 Topic: {topic}
+Audience: {grade_level}
+Number of Sentences: {num_sentences}
 
 Worksheet:
 """
@@ -230,6 +226,40 @@ def create_comprehension_prompt(transcript_text, num_questions=5):
 **{num_questions} Comprehension Questions:**
 """
     return prompt
+
+def create_pasted_comprehension_prompt(pasted_text, num_questions=5):
+    """Creates the prompt for Claude to generate comprehension questions and key from pasted text."""
+    # Basic check for text length to avoid sending huge payloads if needed later
+    max_chars = 15000 # Limit context sent to AI (adjust as needed)
+    truncated_text = pasted_text[:max_chars]
+    if len(pasted_text) > max_chars:
+        print(f"Warning: Pasted text truncated to {max_chars} chars for AI prompt.")
+
+    prompt = f"""You are an expert educator designing reading comprehension assessments.
+Based *only* on the following provided text passage, generate {num_questions} insightful comprehension questions that test understanding of the key information presented within that text.
+Also provide a brief answer key outlining the expected points or a model answer for each question based *only* on the provided text.
+
+**CRITICAL INSTRUCTIONS:**
+1.  **Question Generation:** Create {num_questions} distinct questions directly related to the content of the provided text passage. Questions should require recall, explanation, or analysis *of the passage*.
+2.  **Question Formatting:** Present each question clearly, starting with a number (e.g., "1.", "2.").
+3.  **Answer Key Generation:** After ALL questions are listed, provide a separate section titled exactly "Answer Key:".
+4.  **Key Content:** For each question number in the Answer Key section, provide key points or a model answer derived *solely from the provided passage*.
+5.  **Key Formatting:** Start each answer key item with the corresponding question number (e.g., "1.", "2.").
+6.  **Strict Output:** Output ONLY the numbered list of questions, followed by the "Answer Key:" section and the key itself. No extra text, introductions, or commentary about the text quality.
+
+**Provided Text Passage:**
+--- START TEXT ---
+{truncated_text}
+--- END TEXT ---
+
+**{num_questions} Comprehension Questions:**
+[Generate Questions Here Following Format]
+
+Answer Key:
+[Generate Answer Key Here Following Format]
+"""
+    return prompt
+
 # ---  create_short_answer_prompt function ---
 def create_short_answer_prompt(topic, grade_level, num_questions=5):
     """Creates the prompt for Claude to generate short answer questions AND answer key points."""
@@ -257,6 +287,56 @@ Short Answer Questions:
 
 Answer Key:
 [Generate Answer Key Here Following Format]
+"""
+    return prompt
+def create_similar_questions_prompt(example_question, num_questions=3, grade_level="Not Specified"): # Add other args if needed (e.g., variation flags)
+    """Creates the prompt for Claude to generate similar questions based on an example."""
+
+    # Ensure the example question is treated as potentially multi-line text
+    # Escape any characters in example_question that might interfere with f-string formatting if needed, though usually not necessary for plain text.
+
+    prompt = f"""
+You are an expert question designer replicating educational assessment items. Your task is to analyze the provided example question, identify the core concept and calculation type being tested, and then generate {num_questions} NEW questions that assess the SAME core concept at a SIMILAR difficulty level suitable for {grade_level} students.
+
+**Analysis of Example:**
+First, briefly state the core concept or skill tested by the example question. (e.g., "Calculating speed given distance and time", "Solving a two-step linear equation", "Calculating molarity").
+
+**Instructions for New Questions:**
+1.  **Maintain Core Concept:** Each new question MUST test the exact same fundamental principle or calculation type as the example.
+2.  **Maintain Difficulty:** The complexity of the numbers used, the number of steps required, and the required conceptual understanding should closely match the example question and be appropriate for the target {grade_level}.
+3.  **Construct Realistic Scenarios:** For each new question:
+    a.  **Determine a realistic target answer** appropriate for the concept and grade level (e.g., a percentage yield between 60-95%, a reasonable speed for a car).
+    b.  **Work Backwards:** Choose plausible input numbers (like initial mass, theoretical yield, distance, time, etc.) that will mathematically lead to the target answer you determined. Ensure these input numbers are also contextually sensible (e.g., realistic masses, times, distances).
+    c.  **Vary Context & Specifics:** Create a genuinely new scenario (different chemicals, objects, situations) using these generated numbers. You can vary units where appropriate (e.g., grams to kg) and potentially the specific variable being solved for (if applicable), while keeping the underlying problem type identical to the example. Do NOT just rephrase the example question.
+4.  **Formatting:** Present each new question clearly, starting with a number (e.g., "1.", "2."). List each question on a new line.
+5.  **Answer Key Generation:** After ALL new questions are listed, provide a separate section titled exactly "Answer Key:".
+6. Key Content: In the Answer Key section, for each question number, show the key calculation steps required to solve the problem, followed by the final numerical answer (including units if appropriate). Make the steps clear and concise.
+
+    Example Format:
+    1. Steps:
+       Step 1: Formula (e.g., Speed = Distance / Time)
+       Step 2: Substitute values (e.g., Speed = 300 miles / 5 hours)
+       Step 3: Calculate (e.g., Speed = 60)
+       Final Answer: 60 mph
+    2. Steps:
+       ...
+       Final Answer: ...
+
+7.  **Strict Output:** Output ONLY the brief "Analysis of Example", the numbered list of new questions, the "Answer Key:" title, and the key itself. No extra text, introductions, or explanations.
+
+**Example Question Provided:**
+--- START EXAMPLE ---
+{example_question}
+--- END EXAMPLE ---
+
+**Analysis of Example:**
+[AI writes analysis here]
+
+**{num_questions} New Similar Questions:**
+[AI generates new questions here]
+
+Answer Key:
+[AI generates answer key for the NEW questions here]
 """
     return prompt
 # --- Route to List Saved Items ---
@@ -462,7 +542,7 @@ def generate_mcq_route():
 
 # --- End of MCQ Route ---
 # --- Route for Text Block Generation ---
-# --- Route for Text Block Generation ---
+
 @app.route('/generate_text_block', methods=['POST'])
 def generate_text_block_route():
     print("Received request at /generate_text_block")
@@ -661,6 +741,190 @@ def generate_short_answer_route():
         return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
 
 # --- End of Short Answer Route ---
+
+@app.route('/generate_pasted_comprehension', methods=['POST'])
+def generate_pasted_comprehension_route():
+    """Handles POST requests to generate comprehension questions from pasted text."""
+    print("Received request at /generate_pasted_comprehension")
+
+    if client is None: return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
+    if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+
+    try:
+        data = request.get_json()
+        pasted_text = data.get('pasted_text') # Get the pasted text
+        num_questions_req = data.get('num_questions', 5)
+
+        # --- Validation ---
+        if not pasted_text or not pasted_text.strip(): # Check if text was provided and isn't just whitespace
+            return jsonify({'status': 'error', 'message': 'Missing "pasted_text" in request data'}), 400
+        try:
+            num_questions = int(num_questions_req)
+            if not 2 <= num_questions <= 15: # Use appropriate range
+                raise ValueError("Number of questions must be between 2 and 15.")
+        except (ValueError, TypeError):
+             return jsonify({'status': 'error', 'message': 'Invalid number of questions specified (must be an integer between 2 and 15).'}), 400
+
+        print(f"Received Pasted Text Comp request: NumQuestions={num_questions}, Text Length={len(pasted_text)}")
+
+        # --- Create Prompt ---
+        prompt_content = create_pasted_comprehension_prompt(pasted_text, num_questions) # Call the new prompt function
+
+        # --- Call Anthropic API ---
+        print(f"Sending Pasted Text Comp request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
+        # Use try/except block around the API call for specific Anthropic errors
+        try:
+            message = client.messages.create(
+                model=ANTHROPIC_MODEL_NAME,
+                max_tokens=1500 + (num_questions * 100), # Estimate tokens needed
+                temperature=0.7,
+                messages=[{ "role": "user", "content": prompt_content }]
+            )
+            print("Received response from Anthropic API successfully.")
+        except anthropic.AuthenticationError as auth_err: print(f"Anthropic Authentication Error: {auth_err}"); return jsonify({'status': 'error', 'message': f'AI Authentication Error: {auth_err}'}), 401
+        except anthropic.APIConnectionError as conn_err: print(f"Anthropic Connection Error: {conn_err}"); return jsonify({'status': 'error', 'message': f'AI Connection Error: {conn_err}'}), 503
+        except anthropic.RateLimitError as rate_err: print(f"Anthropic Rate Limit Error: {rate_err}"); return jsonify({'status': 'error', 'message': 'AI Rate Limit Exceeded.'}), 429
+        except anthropic.APIStatusError as status_err:
+            # --- Start of APIStatusError block ---
+            print(f"Anthropic API Status Error: Status Code: {status_err.status_code}, Response: {status_err.response}")
+            error_message = f'AI service error (Status {status_err.status_code})'
+
+            # --- Start of nested try (indented) ---
+            try:
+                error_details = status_err.response.json()
+                error_message += f": {error_details.get('error', {}).get('message', status_err.response.text)}"
+            # --- Nested except (indented to match nested try) ---
+            except Exception:
+                # --- Line inside nested except (indented further) ---
+                error_message += f": {status_err.response.text}"
+            # --- End of nested try...except ---
+
+            # This return belongs to the outer APIStatusError block (indented same as print/error_message assignment)
+            return jsonify({'status': 'error', 'message': error_message}), status_err.status_code
+        except Exception as api_call_err: print(f"Unexpected error DURING Anthropic API call: {api_call_err}"); print(traceback.format_exc()); return jsonify({'status': 'error', 'message': f'Unexpected error during AI call: {api_call_err}'}), 500
+
+        # --- Extract Result ---
+        generated_content = ""
+        if message and message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
+            generated_content = message.content[0].text
+        else:
+             print(f"Warning: Unexpected API response structure or empty content after successful call. Response: {message}"); return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
+
+        print(f"Generated Pasted Text Comp content length: {len(generated_content)} chars")
+
+        # --- Return Result (use a distinct key) ---
+        return jsonify({
+            'status': 'success',
+            'pasted_comprehension_content': generated_content.strip() # Use specific key
+        })
+
+    # --- General Error Handling for route logic ---
+    except ValueError as ve: print(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
+    except Exception as e:
+        print(f"An unexpected error occurred in /generate_pasted_comprehension route logic: {e}"); 
+        print(traceback.format_exc()); 
+        return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
+
+# --- End of Pasted Comprehension Route ---
+# --- Route for Similar Question Generation ---
+@app.route('/generate_similar_questions', methods=['POST'])
+def generate_similar_questions_route():
+    """Handles POST requests to generate similar questions from an example."""
+    print("Received request at /generate_similar_questions")
+
+    if client is None: return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
+    if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+
+    try:
+        data = request.get_json()
+        example_question = data.get('example_question')
+        num_questions_req = data.get('num_questions', 3) # Default to 3 similar questions
+        grade_level = data.get('grade_level', 'Not Specified') # Optional grade level
+        # Add lines here to get variation flags if you implemented them:
+        # allow_unit_conversion = data.get('allow_unit_conversion', False)
+
+        # --- Validation ---
+        if not example_question or not example_question.strip():
+            return jsonify({'status': 'error', 'message': 'Missing "example_question" in request data'}), 400
+        try:
+            num_questions = int(num_questions_req)
+            if not 1 <= num_questions <= 10: # Range for similar questions
+                raise ValueError("Number of questions must be between 1 and 10.")
+        except (ValueError, TypeError):
+             return jsonify({'status': 'error', 'message': 'Invalid number of questions specified (must be an integer between 1 and 10).'}), 400
+
+        print(f"Received SimilarQ request: NumQuestions={num_questions}, Grade='{grade_level}', Example Length={len(example_question)}")
+
+        # --- Create Prompt ---
+        prompt_content = create_similar_questions_prompt(
+            example_question,
+            num_questions,
+            grade_level
+            # Pass variation flags here if needed: allow_unit_conversion=allow_unit_conversion
+        )
+
+        # --- Call Anthropic API ---
+        print(f"Sending SimilarQ request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
+        # Use try/except block around the API call
+        try:
+            message = client.messages.create(
+                model=ANTHROPIC_MODEL_NAME,
+                # Adjust max_tokens based on num_questions and expected complexity/steps
+                max_tokens=1000 + (num_questions * 200),
+                temperature=0.75, # Might need slightly higher temp for creativity in scenarios?
+                messages=[{ "role": "user", "content": prompt_content }]
+            )
+            print("Received response from Anthropic API successfully.")
+        # --- Add FULL specific Anthropic error handling ---
+        except anthropic.AuthenticationError as auth_err: print(f"Anthropic Authentication Error: {auth_err}"); return jsonify({'status': 'error', 'message': f'AI Authentication Error: {auth_err}'}), 401
+        except anthropic.APIConnectionError as conn_err: print(f"Anthropic Connection Error: {conn_err}"); return jsonify({'status': 'error', 'message': f'AI Connection Error: {conn_err}'}), 503
+        except anthropic.RateLimitError as rate_err: print(f"Anthropic Rate Limit Error: {rate_err}"); return jsonify({'status': 'error', 'message': 'AI Rate Limit Exceeded.'}), 429
+        except anthropic.APIStatusError as status_err:
+            print(f"Anthropic API Status Error: Status Code: {status_err.status_code}, Response: {status_err.response}") # No semicolon
+            error_message = f'AI service error (Status {status_err.status_code})' # No semicolon
+
+            # --- Start of nested try ---
+            try:
+                error_details = status_err.response.json() # No semicolon
+                error_message += f": {error_details.get('error', {}).get('message', status_err.response.text)}" # No semicolon
+            # --- Nested except ---
+            except Exception:
+                # --- Line inside nested except ---
+                error_message += f": {status_err.response.text}" # No semicolon
+            # --- End of nested try...except ---
+
+            # *** CORRECTED: Return statement moved OUTSIDE and AFTER nested try/except ***
+            # It is indented to match the 'print' and initial 'error_message' assignment above.
+            return jsonify({'status': 'error', 'message': error_message}), status_err.status_code
+        # --- End of APIStatusError block ---
+
+        except Exception as api_call_err: # Correct outer level
+            print(f"Unexpected error DURING Anthropic API call: {api_call_err}") # No semicolon needed if followed by newline
+            print(traceback.format_exc()) # No semicolon
+            return jsonify({'status': 'error', 'message': f'Unexpected error during AI call: {api_call_err}'}), 500 # No semicolon
+
+
+        # --- Extract Result ---
+        generated_content = ""
+        if message and message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
+            generated_content = message.content[0].text
+        else:
+             print(f"Warning: Unexpected API response structure or empty content after successful call. Response: {message}"); return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
+
+        print(f"Generated SimilarQ content length: {len(generated_content)} chars")
+
+        # --- Return Result (use a distinct key) ---
+        return jsonify({
+            'status': 'success',
+            'similar_questions_content': generated_content.strip() # Use specific key
+        })
+
+    # --- General Error Handling ---
+    except ValueError as ve: print(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
+    except Exception as e:
+        print(f"An unexpected error occurred in /generate_similar_questions route logic: {e}"); print(traceback.format_exc()); return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
+
+# --- End of Similar Questions Route ---
 # --- Route to Serve the Frontend HTML ---
 @app.route('/')
 def serve_index():
@@ -757,59 +1021,80 @@ def get_item_route(item_id):
 
 # --- End of Get Item Route ---
 # --- Route to Handle Worksheet Generation ---
-@app.route('/generate_worksheet', methods=['POST'])
+@app.route('/generate_worksheet', methods=['POST']) # This is the Gap Fill route
 def generate_worksheet_route():
-    """Handles POST requests to generate a worksheet."""
-    print("Received request at /generate_worksheet")
+    """Handles POST requests to generate a gap-fill worksheet."""
+    print("Received request at /generate_worksheet (Gap Fill)")
 
-    if client is None:
-        print("Error: Anthropic client not initialized.")
-        return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
-
-    if not request.is_json:
-        print("Error: Request is not JSON.")
-        return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+    if client is None: return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
+    if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
 
     try:
         data = request.get_json()
         topic = data.get('topic')
-        grade_level = data.get('grade_level', 'middle school') # Default if missing
-
-        # Log received data
-        print(f"Received data: {data}")
+        grade_level = data.get('grade_level', 'middle school')
+        # ** ADDED: Get and validate num_sentences **
+        num_sentences_req = data.get('num_sentences', 7) # Default 7
 
         if not topic:
-            print("Error: 'topic' missing in request data.")
             return jsonify({'status': 'error', 'message': 'Missing "topic" in request data'}), 400
+        try:
+            num_sentences = int(num_sentences_req)
+            if not 3 <= num_sentences <= 15: # Use same range as frontend
+                raise ValueError("Number of sentences must be between 3 and 15.")
+        except (ValueError, TypeError):
+             return jsonify({'status': 'error', 'message': 'Invalid number of sentences specified (must be an integer between 3 and 15).'}), 400
 
-        # Log the topic and grade level correctly
-        print(f"Received topic: '{topic}', Grade Level: '{grade_level}'")
+        print(f"Received Gap Fill request: Topic='{topic}', Grade='{grade_level}', NumSentences={num_sentences}") # Updated log
 
-        # Create the prompt
-        prompt_content = create_gap_fill_prompt(topic, grade_level)
+        # ** UPDATED: Pass num_sentences to prompt function **
+        prompt_content = create_gap_fill_prompt(topic, grade_level, num_sentences)
 
-        # --- Call Anthropic API ---
-        print(f"Sending request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
-        message = client.messages.create(
-            model=ANTHROPIC_MODEL_NAME,
-            max_tokens=700, # Increased max_tokens slightly for potentially longer Opus responses
-            temperature=0.7,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt_content
-                }
-            ]
-        )
-        print("Received response from Anthropic API.")
+        # --- Call Anthropic API (Keep nested try/except for specific errors) ---
+        print(f"Sending Gap Fill request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
+        try:
+            message = client.messages.create(
+                model=ANTHROPIC_MODEL_NAME,
+                # ** UPDATED: Adjust max_tokens based on number of sentences **
+                max_tokens=500 + (num_sentences * 60), # Rough estimate
+                temperature=0.7,
+                messages=[{ "role": "user", "content": prompt_content }]
+            )
+            print("Received response from Anthropic API successfully.")
+        # ... keep specific anthropic error handling (AuthenticationError, etc.) ...
+        except anthropic.AuthenticationError as auth_err: print(f"Anthropic Authentication Error: {auth_err}"); return jsonify({'status': 'error', 'message': f'AI Authentication Error: {auth_err}'}), 401
+        except anthropic.APIConnectionError as conn_err: print(f"Anthropic Connection Error: {conn_err}"); return jsonify({'status': 'error', 'message': f'AI Connection Error: {conn_err}'}), 503
+        except anthropic.RateLimitError as rate_err: print(f"Anthropic Rate Limit Error: {rate_err}"); return jsonify({'status': 'error', 'message': 'AI Rate Limit Exceeded.'}), 429
+        except anthropic.APIStatusError as status_err: 
+            print(f"Anthropic API Status Error: Status Code: {status_err.status_code}, Response: {status_err.response}"); 
+            error_message = f'AI service error (Status {status_err.status_code})'; 
+            try: 
+                error_details = status_err.response.json(); 
+                error_message += f": {error_details.get('error', {}).get('message', status_err.response.text)}"; 
+            except Exception: error_message += f": {status_err.response.text}"; 
+            return jsonify({'status': 'error', 'message': error_message}), status_err.status_code
+        except Exception as api_call_err: print(f"Unexpected error DURING Anthropic API call: {api_call_err}"); print(traceback.format_exc()); return jsonify({'status': 'error', 'message': f'Unexpected error during AI call: {api_call_err}'}), 500
 
-        # Extract the generated text
-        generated_text = ""
-        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
-            generated_text = message.content[0].text
+
+        # --- Extract Result ---
+        generated_content = ""
+        if message and message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
+            generated_content = message.content[0].text
         else:
-            print(f"Warning: Unexpected API response structure or empty content. Response: {message}")
-            return jsonify({'status': 'error', 'message': 'Failed to parse content from API response.'}), 500
+             print(f"Warning: Unexpected API response structure or empty content. Response: {message}"); return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
+
+        print(f"Generated Gap Fill content length: {len(generated_content)} chars")
+
+        # --- Return Result ---
+        return jsonify({
+            'status': 'success',
+            'worksheet_content': generated_content.strip() # Keep original response key
+        })
+
+    # --- General Error Handling ---
+    except ValueError as ve: print(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
+    except Exception as e:
+        print(f"An unexpected error occurred in /generate_worksheet route logic: {e}"); print(traceback.format_exc()); return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
 
         # Log content length
         print(f"Generated content length: {len(generated_text)} characters")
