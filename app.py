@@ -8,6 +8,12 @@ from dotenv import load_dotenv
 import traceback # Import traceback for detailed error logging
 import logging # Import standard logging
 import httpx
+import io
+from flask import send_file
+import docx
+from bs4 import BeautifulSoup
+from docx.shared import Inches, Pt
+
 
 # Configure basic logging early
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(name)s:%(message)s')
@@ -40,28 +46,72 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Initialize the SQLAlchemy extension
 db = SQLAlchemy(app)
 # --- Database Model Definition ---
-class GeneratedItem(db.Model):
-    __tablename__ = 'generated_items' # Explicit table name (optional, but good practice)
 
-    id = db.Column(db.Integer, primary_key=True) # Auto-incrementing primary key
-    item_type = db.Column(db.String(50), nullable=False) # 'gap_fill', 'youtube_comprehension', etc.
-    source_topic = db.Column(db.String(250), nullable=True) # Topic used for generation (nullable for non-topic items)
-    source_url = db.Column(db.String(500), nullable=True) # URL used for generation (nullable for topic items)
-    grade_level = db.Column(db.String(50), nullable=False) # e.g., 'middle school'
-    content_html = db.Column(db.Text, nullable=False) # The generated/edited HTML content
-    # Use timezone.utc for database consistency
+
+# --- New Database Models for Worksheets ---
+
+    # Association Table: Links Worksheets and GeneratedItems, storing order
+    
+worksheet_items_association = db.Table('worksheet_items_association',
+    db.Column('worksheet_id', db.Integer, db.ForeignKey('worksheets.id'), primary_key=True),
+    # Check if your actual DB column is 'generated_item_id' or 'generated_item_id'
+    db.Column('generated_item_id', db.Integer, db.ForeignKey('generated_items.id'), primary_key=True),
+    db.Column('item_order', db.Integer, nullable=False)
+)
+
+# 2. Define GeneratedItem class SECOND
+class GeneratedItem(db.Model):
+    __tablename__ = 'generated_items'
+
+    id = db.Column(db.Integer, primary_key=True)
+    item_type = db.Column(db.String(50), nullable=False)
+    source_topic = db.Column(db.String(250), nullable=True)
+    source_url = db.Column(db.String(500), nullable=True)
+    grade_level = db.Column(db.String(50), nullable=False)
+    content_html = db.Column(db.Text, nullable=False)
     creation_date = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     last_modified_date = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-    # Potential future fields:
-    # tags = db.Column(db.String(200), nullable=True) # Comma-separated tags? Or a separate table later.
-    # description = db.Column(db.String(500), nullable=True) # User-added description
+
+    # Relationship to Worksheet using back_populates
+    # Use the STRING NAME 'worksheet_items_association' for secondary argument
+    worksheets = db.relationship(
+        'Worksheet',
+        secondary='worksheet_items_association', # <<< Use STRING NAME
+        back_populates='items',
+        lazy='selectin'
+    )
 
     def __repr__(self):
-        # Helpful representation for debugging
-        return f'<GeneratedItem id={self.id} type={self.item_type} topic="{self.source_topic}" url="{self.source_url}">'
+        return f'<GeneratedItem id={self.id} type={self.item_type}>'
 
+
+# 3. Define Worksheet class THIRD
+class Worksheet(db.Model):
+    __tablename__ = 'worksheets'
+
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(250), nullable=False, default="Untitled Worksheet")
+    creation_date = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    last_modified_date = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    # Relationship to GeneratedItems via the association table
+    # Use the STRING NAME 'worksheet_items_association' for secondary argument
+    # order_by still correctly references the COLUMN on the TABLE OBJECT
+    items = db.relationship(
+        'GeneratedItem',
+        secondary='worksheet_items_association', # <<< Use STRING NAME
+        # order_by MUST still use the table object defined globally
+        order_by=worksheet_items_association.c.item_order,
+        back_populates='worksheets',
+        lazy='selectin'
+    )
+
+    def __repr__(self):
+        return f'<Worksheet id={self.id} title="{self.title}">'
+
+    # --- End of New Models ---
 # --- End Database Model Definition ---
-
+db.configure_mappers()
 # Initialize the Anthropic Client (More robust initialization)
 client = None
 try:
@@ -935,13 +985,14 @@ def serve_index():
 @app.route('/save_item', methods=['POST'])
 def save_item_route():
     """Handles POST requests to save an item to the database."""
-    print("Received request at /save_item")
+    print("--- save_item route entered ---")
 
     if not request.is_json:
-        print("Error: Request is not JSON for /save_item")
+        print("ERROR save_item: Request is not JSON")
         return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
 
     data = request.get_json()
+    print(f"DEBUG save_item: Received data keys: {list(data.keys())}")
 
     # --- Extract data from payload ---
     item_type = data.get('item_type')
@@ -951,17 +1002,24 @@ def save_item_route():
     content_html = data.get('content_html')
 
     # --- Basic Validation ---
+    # Check for essential fields first
     if not item_type or not grade_level or not content_html:
+         print(f"ERROR save_item: Missing required fields. Got type: {item_type}, grade: {grade_level}, content: {bool(content_html)}")
          return jsonify({'status': 'error', 'message': 'Missing required fields: item_type, grade_level, content_html'}), 400
-    if item_type == 'gapFill' and not source_topic:
-         return jsonify({'status': 'error', 'message': 'Missing source_topic for gapFill item'}), 400
-    if item_type == 'youtube' and not source_url:
-         return jsonify({'status': 'error', 'message': 'Missing source_url for youtube item'}), 400
 
-    print(f"Attempting to save item: type={item_type}, topic={source_topic}, url={source_url}, grade={grade_level}, html_len={len(content_html or '')}")
+    # Optional: Mode-specific validation (Uncomment/adjust if needed)
+    # if item_type == 'gapFill' and not source_topic:
+    #      print("ERROR save_item: Missing source_topic for gapFill")
+    #      return jsonify({'status': 'error', 'message': 'Missing source_topic for gapFill item'}), 400
+    # if item_type == 'youtube' and not source_url: # Update 'youtube' if type name changed
+    #      print("ERROR save_item: Missing source_url for youtube item")
+    #      return jsonify({'status': 'error', 'message': 'Missing source_url for youtube item'}), 400
 
+    print(f"DEBUG save_item: Preparing to create item: type={item_type}, grade={grade_level}")
+
+    # --- Create Database Record ---
     try:
-        # --- Create Database Record ---
+        # Create the object WITHIN the try block in case of data type issues
         new_item = GeneratedItem(
             item_type=item_type,
             source_topic=source_topic,
@@ -970,19 +1028,24 @@ def save_item_route():
             content_html=content_html
             # Timestamps are handled by default/onupdate
         )
+        print(f"DEBUG save_item: GeneratedItem object CREATED: {new_item}") # Now safe to print
 
         # --- Add to session and commit ---
         db.session.add(new_item)
-        db.session.commit()
+        print("DEBUG save_item: Added to session.")
+        db.session.commit() # This assigns the ID
+        print(f"DEBUG save_item: Commit successful. ID assigned: {new_item.id}")
 
-        print(f"Successfully saved item with ID: {new_item.id}")
-        return jsonify({'status': 'success', 'message': 'Item saved successfully!', 'item_id': new_item.id})
+        # --- Prepare and return success response ---
+        response_data = {'status': 'success', 'item_id': new_item.id}
+        print(f"DEBUG save_item: Returning success data: {response_data}")
+        return jsonify(response_data)
 
     except Exception as e:
-        db.session.rollback() # Rollback transaction on error
-        print(f"Error saving item to database: {e}")
-        print(traceback.format_exc())
-        return jsonify({'status': 'error', 'message': f'Database error: {e}'}), 500
+        db.session.rollback() # Rollback transaction on any error during creation or commit
+        print(f"ERROR save_item: Exception during DB operation: {e}")
+        print(traceback.format_exc()) # Print full traceback to terminal
+        return jsonify({'status': 'error', 'message': f'Database error: {str(e)}'}), 500
 
 # --- End of Save Route ---
 # --- Route to Get Full Content of a Specific Saved Item ---
@@ -1127,6 +1190,138 @@ def generate_worksheet_route():
         print(traceback.format_exc())
         return jsonify({'status': 'error', 'message': f'An internal server error occurred.'}), 500
 
+# --- Route to Save Assembled Worksheet ---
+@app.route('/save_worksheet', methods=['POST'])
+def save_worksheet_route():
+    """Handles POST requests to save the assembled worksheet structure."""
+    print("Received request at /save_worksheet")
+    if not request.is_json:
+        return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+
+    data = request.get_json()
+    worksheet_title = data.get('title', 'Untitled Worksheet') # Get title from frontend
+    item_ids_ordered = data.get('item_ids') # Get ordered list of GeneratedItem IDs
+
+    if not item_ids_ordered or not isinstance(item_ids_ordered, list):
+        return jsonify({'status': 'error', 'message': 'Missing or invalid "item_ids" list in request data'}), 400
+
+    print(f"Attempting to save worksheet: Title='{worksheet_title}', Item IDs={item_ids_ordered}")
+
+    try:
+        # 1. Create the new Worksheet record
+        new_worksheet = Worksheet(title=worksheet_title)
+        # TODO: Add user_id=current_user.id here when login is implemented
+        db.session.add(new_worksheet)
+        # We need to flush to get the new_worksheet.id before creating associations
+        db.session.flush()
+        worksheet_id = new_worksheet.id
+
+        # 2. Clear existing items for this worksheet if it were an update (optional)
+        # For simplicity now, we assume it's always a new save. Update logic is more complex.
+        # new_worksheet.items[:] = [] # Clears relationship if needed for update
+
+        # 3. Add items to the relationship via the association table, preserving order
+        items_to_add = []
+        order_index = 0
+        for item_id in item_ids_ordered:
+            generated_item = db.session.get(GeneratedItem, int(item_id))
+            if generated_item:
+                # Create association explicitly to set order easily
+                # Note: This directly manipulates the association table instance.
+                # SQLAlchemy handles adding the 'generated_item' to 'new_worksheet.items' through the relationship.
+                assoc_insert = worksheet_items_association.insert().values(
+                    worksheet_id=worksheet_id,
+                    generated_item_id=generated_item.id,
+                    item_order=order_index
+                )
+                db.session.execute(assoc_insert) # Execute the insert statement
+                items_to_add.append(generated_item.id) # Keep track for logging/confirmation
+                order_index += 1
+            else:
+                print(f"Warning: GeneratedItem with ID {item_id} not found while saving worksheet {worksheet_id}. Skipping.")
+                # Optionally raise an error or return a specific warning?
+
+        # 4. Commit the transaction
+        db.session.commit()
+
+        print(f"Successfully saved Worksheet ID: {worksheet_id} with item IDs: {items_to_add} in order.")
+        return jsonify({'status': 'success', 'message': 'Worksheet saved successfully!', 'worksheet_id': worksheet_id})
+
+    except Exception as e:
+        db.session.rollback() # Rollback on any error
+        print(f"Error saving worksheet to database: {e}")
+        print(traceback.format_exc())
+        return jsonify({'status': 'error', 'message': f'Database error while saving worksheet: {e}'}), 500
+# --- End of Save Worksheet Route ---
+# --- Route to List Saved Worksheets ---
+@app.route('/list_worksheets', methods=['GET'])
+def list_worksheets_route():
+    """Handles GET requests to retrieve a list of saved worksheets."""
+    print("Received request at /list_worksheets")
+    try:
+        # TODO: Filter by logged-in user when users are implemented
+        # worksheets = Worksheet.query.filter_by(user_id=current_user.id).order_by(Worksheet.last_modified_date.desc()).all()
+        worksheets = Worksheet.query.order_by(Worksheet.last_modified_date.desc()).limit(50).all() # Limit for now
+
+        worksheets_list = []
+        for ws in worksheets:
+            worksheets_list.append({
+                'id': ws.id,
+                'title': ws.title,
+                'creation_date': ws.creation_date.isoformat(),
+                'last_modified_date': ws.last_modified_date.isoformat(),
+                # 'item_count': ws.items.count() # Count items if needed (might be slow with lazy='dynamic')
+            })
+
+        return jsonify({'status': 'success', 'worksheets': worksheets_list})
+
+    except Exception as e:
+        print(f"Error retrieving worksheets from database: {e}")
+        print(traceback.format_exc())
+        return jsonify({'status': 'error', 'message': 'Error retrieving worksheet list.'}), 500
+# --- End of List Worksheets Route ---
+
+# --- Route to Load a Specific Worksheet ---
+@app.route('/load_worksheet/<int:worksheet_id>', methods=['GET'])
+def load_worksheet_route(worksheet_id):
+    """Handles GET requests to retrieve the items for a specific worksheet ID."""
+    print(f"Received request at /load_worksheet/{worksheet_id}")
+    try:
+        # TODO: Add check: Ensure worksheet belongs to the current user when login is implemented
+        worksheet = db.session.get(Worksheet, worksheet_id) # Fetch worksheet by ID
+
+        if worksheet is None:
+            return jsonify({'status': 'error', 'message': 'Worksheet not found.'}), 404
+
+        # Access the 'items' relationship - SQLAlchemy loads them ordered by item_order
+        # Because lazy='dynamic', worksheet.items is a query object. Use .all() to execute.
+        ordered_items = worksheet.items # Get the actual GeneratedItem objects in order
+
+        items_data = []
+        for item in ordered_items:
+            items_data.append({
+                # Include all necessary data for frontend rendering
+                'id': item.id,
+                'item_type': item.item_type,
+                'source_topic': item.source_topic,
+                'source_url': item.source_url,
+                'grade_level': item.grade_level,
+                'content_html': item.content_html # Send full HTML needed for display
+            })
+
+        print(f"Returning {len(items_data)} items for Worksheet ID: {worksheet_id}")
+        return jsonify({
+            'status': 'success',
+            'worksheet_title': worksheet.title, # Also return title
+            'items': items_data # Return the list of items with their content
+            })
+
+    except Exception as e:
+        print(f"Error retrieving worksheet {worksheet_id} from database: {e}")
+        print(traceback.format_exc())
+        return jsonify({'status': 'error', 'message': 'Error retrieving worksheet details.'}), 500
+# --- End of Load Worksheet Route ---
+
 @app.route('/generate_comprehension', methods=['POST'])
 def generate_comprehension_route():
     """Handles POST requests to generate comprehension questions from a YouTube URL."""
@@ -1249,6 +1444,160 @@ def generate_comprehension_route():
         print(traceback.format_exc())
         return jsonify({'status': 'error', 'message': f'An internal server error occurred.'}), 500
 
+@app.route('/export/docx/<int:worksheet_id>')
+def export_worksheet_docx(worksheet_id):
+    """Exports a specific worksheet as a DOCX file."""
+    logging.info(f"Received request to export worksheet ID: {worksheet_id} as DOCX.")
+    try:
+        worksheet = Worksheet.query.get_or_404(worksheet_id)
+        items = worksheet.items # Ordered based on relationship definition
+
+        document = docx.Document()
+
+        # --- Apply Document Formatting ---
+        target_font = 'Century Gothic'
+        try:
+            normal_style = document.styles['Normal']
+            normal_style.font.name = target_font
+            # normal_style.font.size = Pt(11) # Optional
+            logging.info(f"Default document font set to {target_font}.")
+        except Exception as font_e:
+            logging.warning(f"Could not set default font to {target_font}: {font_e}")
+
+        try:
+            h3_style = document.styles['Heading 3']
+            h3_style.font.name = target_font
+            # Optional: Adjust Heading 3 size/bold if needed
+            # h3_style.font.size = Pt(13)
+            # h3_style.font.bold = True
+            logging.info(f"Heading 3 font set to {target_font}.")
+        except Exception as style_e:
+            logging.warning(f"Could not modify Heading 3 style: {style_e}")
+
+        try:
+            section = document.sections[0]
+            section.left_margin = Inches(0.5)
+            section.right_margin = Inches(0.5)
+            section.top_margin = Inches(0.5)
+            section.bottom_margin = Inches(0.5)
+            logging.info("Margins set to Narrow (0.5 inches).")
+        except Exception as margin_e:
+            logging.warning(f"Could not set margins: {margin_e}")
+        # --- End Formatting ---
+
+        document.add_heading(worksheet.title, level=1)
+        document.add_paragraph() # Space after title
+
+        # --- Add Worksheet Items ---
+        for item_index, item in enumerate(items):
+            logging.debug(f"Processing item {item_index + 1} (ID: {item.id}, Type: {item.item_type})")
+            soup = BeautifulSoup(item.content_html, 'lxml')
+            # Find top-level content elements more robustly
+            content_elements = list(soup.find('body').find_all(True, recursive=False)) if soup.find('body') else list(soup.find_all(True, recursive=False))
+
+            if not content_elements: # Handle case where HTML might be just text
+                if soup.get_text(strip=True):
+                     document.add_paragraph(soup.get_text(strip=True))
+                continue # Go to next item if no elements found
+
+            for element in content_elements:
+                if element.name == 'p':
+                    para = document.add_paragraph()
+                    add_runs_from_html_element(para, element)
+                elif element.name in ['ol', 'ul']:
+                    list_items = element.find_all('li', recursive=False)
+                    style = 'List Number' if element.name == 'ol' else 'List Bullet'
+                    for li in list_items:
+                        para = document.add_paragraph(style=style)
+                        add_runs_from_html_element(para, li)
+                    # Attempt numbering reset with tiny font paragraph
+                    reset_para = document.add_paragraph()
+                    run = reset_para.add_run()
+                    run.font.size = Pt(1)
+                    logging.debug("Added tiny-font paragraph break after list.")
+                elif element.name == 'h3':
+                    document.add_heading(element.get_text(strip=True), level=3)
+                elif element.name == 'div' and 'worksheet-section' in element.get('class', []):
+                     heading = element.find('h3')
+                     if heading:
+                          document.add_heading(heading.get_text(strip=True), level=3)
+                     # Process content within the div
+                     inner_content = element.find_all(['p', 'ol', 'ul'], recursive=False)
+                     for inner_element in inner_content:
+                          if inner_element.name == 'p':
+                               para = document.add_paragraph()
+                               add_runs_from_html_element(para, inner_element)
+                          elif inner_element.name in ['ol', 'ul']:
+                               # Attempt numbering reset with tiny font paragraph
+                               reset_para = document.add_paragraph()
+                               run = reset_para.add_run()
+                               run.font.size = Pt(1)
+                               logging.debug("Added tiny-font paragraph break before inner list.")
+                               # Process list items
+                               inner_list_items = inner_element.find_all('li', recursive=False)
+                               inner_style = 'List Number' if inner_element.name == 'ol' else 'List Bullet'
+                               for inner_li in inner_list_items:
+                                    para = document.add_paragraph(style=inner_style)
+                                    add_runs_from_html_element(para, inner_li)
+                elif element.name is None and element.string and element.string.strip():
+                    # Handle potential text nodes directly under body/soup root
+                    document.add_paragraph(element.string.strip())
+                # else: # Optionally log ignored top-level tags
+                #     logging.debug(f"Ignoring top-level tag: {element.name}")
+
+            # Add separator between items
+            if item_index < len(items) - 1:
+                document.add_paragraph("_________________________")
+                document.add_paragraph()
+
+        # --- Save and Return File ---
+        file_stream = io.BytesIO()
+        document.save(file_stream)
+        file_stream.seek(0)
+
+        filename = f"{worksheet.title.replace(' ', '_').lower() or 'worksheet'}.docx"
+        logging.info(f"Sending DOCX file: {filename}")
+        return send_file(
+            file_stream,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        )
+    except Exception as e:
+        logging.error(f"Error exporting DOCX for worksheet {worksheet_id}: {e}", exc_info=True)
+        return f"Error exporting worksheet: {str(e)}", 500
+
+def add_runs_from_html_element(paragraph, element):
+    """
+    Recursively adds formatted runs to a python-docx paragraph based on basic HTML tags
+    found within a BeautifulSoup element. Handles <strong>, <em>, <b>, <i>, <br>,
+    gap-fill spans, and extracts text from other tags.
+    """
+    for content in element.contents: # Iterate through children (tags and text strings)
+        if isinstance(content, str): # Plain text string
+            text_content = content.replace('\xa0', ' ') # Replace non-breaking space
+            paragraph.add_run(text_content)
+        elif content.name in ['strong', 'b']:
+            run = paragraph.add_run(content.get_text(strip=True).replace('\xa0', ' '))
+            run.bold = True
+        elif content.name in ['em', 'i']:
+            run = paragraph.add_run(content.get_text(strip=True).replace('\xa0', ' '))
+            run.italic = True
+        elif content.name == 'span' and 'gap-placeholder' in content.get('class', []):
+            paragraph.add_run(" [__________] ") # Visual placeholder for gaps
+        elif content.name == 'br':
+             paragraph.add_run("\n") # Add newline for <br>
+        elif hasattr(content, 'name') and content.name: # It's another tag
+            # Recursively call this function for known inline tags if needed,
+            # or just extract text for block-level or unknown tags.
+            # For simplicity, just get text from any other tag for now.
+            text_content = content.get_text(strip=True).replace('\xa0', ' ')
+            if text_content:
+                paragraph.add_run(text_content)
+        # Add more tags here if needed (e.g., 'u' for underline)
+        # Ignore unknown tags for now or add their text content
+        # else:
+        #     paragraph.add_run(content.get_text()) # Add text from unknown tags?
 # --- Run the App ---
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5001)
