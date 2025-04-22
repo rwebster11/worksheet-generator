@@ -45,6 +45,12 @@
     <div id="libraryOutput">
         Click "Load Saved Items" to view your library.
     </div>
+    <!-- ** ADDED SAVED WORKSHEETS SECTION ** -->
+    <h2 style="margin-top: 30px;">Saved Worksheets</h2>
+    <button id="loadWorksheetsButton" style="background-color: #6c757d;">Load Worksheet List</button>
+    <div id="savedWorksheetsList" style="border: 1px solid #ccc; padding: 15px; background-color: #fff; min-height: 80px; border-radius: 4px; margin-top: 10px;">
+        Click "Load Worksheet List" to view saved worksheets.
+    </div>
 
     <hr>
 
@@ -137,10 +143,6 @@
              <div> <label for="tbDirectInput">Or Enter/Edit Your Text Directly:</label> <textarea id="tbDirectInput" rows="8" placeholder="Type your instructions or text here..."></textarea> </div>
         </fieldset>
     </div>
-<!-- Inputs for Text Block -->
-<div id="textBlockInputs" class="hidden">
-    <!-- ... -->
- </div>
  
  <!-- ** ADD THIS NEW INPUT SECTION ** -->
  <div id="similarQInputs" class="hidden">
@@ -190,6 +192,12 @@
     <div id="itemPreviewArea"> Generated/loaded item will appear here for preview/editing. </div>
     <hr>
     <h2>Worksheet Assembly Area</h2>
+    <div style="margin-bottom: 15px; background-color: #fff; padding: 10px; border-radius: 4px; border: 1px solid #ccc;">
+        <label for="worksheetTitleInput" style="display: inline-block; margin-right: 10px;">Worksheet Title:</label>
+        <input type="text" id="worksheetTitleInput" placeholder="Enter a title for this worksheet" style="display: inline-block; width: auto; max-width: 300px; margin-bottom: 0;">
+        <button id="saveWorksheetButton" style="background-color: #28a745; margin-left: 15px; float: right;">Save This Worksheet</button>
+        <div style="clear: both;"></div> <!-- Clear float -->
+    </div>
 <button id="clearSheetButton" style="background-color: #dc3545;">Clear Worksheet</button> <!-- Added Clear Button -->
 <div id="worksheetAssemblyArea" style="border: 2px dashed #6c757d; padding: 20px; background-color: #e9ecef; min-height: 300px; margin-top: 15px;">
     <!-- Items added to the worksheet will appear here -->
@@ -243,13 +251,14 @@
         const addToSheetButton = document.getElementById('addToSheetButton');
         const worksheetAssemblyArea = document.getElementById('worksheetAssemblyArea');
         const clearSheetButton = document.getElementById('clearSheetButton');
+        const worksheetTitleInput = document.getElementById('worksheetTitleInput');
         const libraryOutput = document.getElementById('libraryOutput');
         const toggleEditButton = document.getElementById('toggleEditButton');
         const saveButton = document.getElementById('saveButton');
 
         // --- State Variables ---
         let isEditingEnabled = false;
-
+        let currentPreviewItemId = null; // Store ID of item in preview
         // --- Helper Functions ---
 
         // Handles showing/hiding topic input for Text Block mode
@@ -264,6 +273,8 @@
         // ** FIXED handleModeChange Function **
         function handleModeChange() {
     console.log("--- handleModeChange START ---"); // Keep logs for now
+    currentPreviewItemId = null;
+    console.log("handleModeChange: currentPreviewItemId reset to null");
     // Hide all input sections first
     gapFillInputsDiv.classList.add('hidden');
     pastedTextInputsDiv.classList.add('hidden');
@@ -518,6 +529,8 @@
 
         generateButton.addEventListener('click', async () => {
             console.log(">>> generateButton clicked! <<<"); // Log entry
+            currentPreviewItemId = null;
+            console.log("Generate Button: currentPreviewItemId reset to null");
 
             // --- Declare ALL potential payload variables OUTSIDE the blocks ---
             let fetchUrl = '';
@@ -740,7 +753,7 @@
             } else if (selectedMode === 'similarQ') {
                  // Save the example question as the topic for now? Or first few words?
                  source_topic = sqExampleInput.value.substring(0, 50).trim() + "... (Similar Q)";
-                 grade_level = sqGradeLevelSelect.value;
+                 gradeLevel = sqGradeLevelSelect.value;
                  if (!sqExampleInput.value.trim()) { alert("Cannot save similar question without original example text."); isValidMeta = false; }
             } else {
                 alert("Unknown item type selected for saving.");
@@ -776,15 +789,239 @@
                 const result = await response.json();
                 if (!response.ok || result.status !== 'success') { throw new Error(result.message || `HTTP error! status: ${response.status}`); }
                 alert("Item saved successfully!");
+                if (result.item_id) {
+                    currentPreviewItemId = result.item_id;
+                    console.log('Item saved successfully! Stored ID:', currentPreviewItemId);
+                    alert(`Item saved successfully! ID: ${currentPreviewItemId}`);
+                } else {
+                    // This case should ideally not happen if backend is correct
+                    currentPreviewItemId = null; // Ensure ID is null if not returned
+                    console.warn('Item saved, but item_id was missing in the response:', result);
+                    alert("Item saved, but failed to retrieve its ID.");
+                }
                 saveButton.textContent = 'Saved!'; // Indicate success
             } catch (error) {
                 console.error("Error saving item:", error);
                 alert(`Error saving item: ${error.message}`);
                 saveButton.textContent = 'Save to Library'; // Reset text
                 saveButton.disabled = false; // Re-enable on error
+                currentPreviewItemId = null;
             }
         }); // <-- End of saveButton listener
+        // --- SAVE WORKSHEET LISTENER ---
+        saveWorksheetButton.addEventListener('click', async () => {
+        const worksheetTitle = worksheetTitleInput.value.trim() || "Untitled Worksheet"; // Get title or use default
+        const itemsInWorksheet = worksheetAssemblyArea.querySelectorAll('.worksheet-item'); // Get all item divs
 
+        if (itemsInWorksheet.length === 0) {
+            alert("Cannot save an empty worksheet. Please add items first.");
+            return;
+        }
+
+        // --- Extract Ordered Item IDs ---
+        // We need to have stored the original GeneratedItem ID on each worksheet item div when it was added
+        const orderedItemIds = [];
+        itemsInWorksheet.forEach(itemDiv => {
+            const itemId = itemDiv.dataset.generatedItemId; // ** We need to ADD this data attribute later **
+            if (itemId) {
+                orderedItemIds.push(itemId);
+            } else {
+                console.warn("Found a worksheet item without a generatedItemId dataset.", itemDiv);
+                // Optionally alert the user or skip? For now, we skip.
+            }
+        });
+
+        if (orderedItemIds.length === 0) {
+             alert("Could not find item IDs to save. Ensure items were added correctly.");
+             return;
+        }
+
+        // --- Prepare Payload ---
+        const payload = {
+            title: worksheetTitle,
+            item_ids: orderedItemIds // Send the array of IDs in order
+        };
+        console.log("Saving Worksheet Payload:", payload);
+
+        // --- Send to Backend ---
+        saveWorksheetButton.disabled = true;
+        saveWorksheetButton.textContent = 'Saving...';
+        try {
+            const response = await fetch('/save_worksheet', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            if (!response.ok || result.status !== 'success') {
+                throw new Error(result.message || `HTTP error! status: ${response.status}`);
+            }
+            alert(`Worksheet '${worksheetTitle}' saved successfully! (ID: ${result.worksheet_id})`);
+            worksheetTitleInput.value = ''; // Clear title input maybe?
+            saveWorksheetButton.textContent = 'Worksheet Saved';
+            // Optionally reload the worksheet list?
+            // loadWorksheetsButton.click(); // Trigger loading the list again
+
+        } catch (error) {
+            console.error("Error saving worksheet:", error);
+            alert(`Error saving worksheet: ${error.message}`);
+            saveWorksheetButton.textContent = 'Save This Worksheet';
+            saveWorksheetButton.disabled = false; // Re-enable on error
+        } finally {
+             // Decide if button should stay disabled after successful save or re-enable
+             // saveWorksheetButton.disabled = false;
+        }
+    });
+    // --- END OF SAVE WORKSHEET LISTENER ---
+    // --- LOAD WORKSHEETS LIST LISTENER ---
+    loadWorksheetsButton.addEventListener('click', async () => {
+        savedWorksheetsList.innerHTML = '<div class="loading">Loading worksheet list...</div>';
+        loadWorksheetsButton.disabled = true;
+        try {
+            const response = await fetch('/list_worksheets');
+            const data = await response.json();
+            if (!response.ok || data.status !== 'success') {
+                throw new Error(data.message || `HTTP error! status: ${response.status}`);
+            }
+
+            if (data.worksheets && data.worksheets.length > 0) {
+                savedWorksheetsList.innerHTML = ''; // Clear
+                const list = document.createElement('ul');
+                list.style.listStyle = 'none'; list.style.padding = '0';
+                data.worksheets.forEach(ws => {
+                    const listItem = document.createElement('li');
+                    listItem.style.borderBottom = '1px dashed #eee';
+                    listItem.style.marginBottom = '10px';
+                    listItem.style.paddingBottom = '10px';
+                    listItem.innerHTML = `
+                        <strong>${ws.title}</strong> (ID: ${ws.id})<br>
+                        <small>Last Modified: ${new Date(ws.last_modified_date).toLocaleString()}</small>
+                        <button data-worksheet-id="${ws.id}" class="load-worksheet-button" style="margin-left: 15px; padding: 2px 8px; font-size: 0.8em; background-color:#ffc107; color:black;">Load This Worksheet</button>
+                        <button data-worksheet-id="${ws.id}" class="export-docx-button" style="margin-left: 5px; padding: 2px 8px; font-size: 0.8em; background-color:#007bff; color:white;">Export DOCX</button>
+                        <!-- Add Delete Worksheet button later -->
+                    `;
+                    list.appendChild(listItem);
+                });
+                savedWorksheetsList.appendChild(list);
+            } else {
+                savedWorksheetsList.innerHTML = '<p>No saved worksheets found.</p>';
+            }
+        } catch (error) {
+            console.error("Error loading worksheet list:", error);
+            savedWorksheetsList.innerHTML = `<p style="color: red;">Error loading worksheet list: ${error.message}</p>`;
+        } finally {
+            loadWorksheetsButton.disabled = false;
+        }
+    });
+    // --- END OF LOAD WORKSHEETS LIST LISTENER ---
+    // --- LOAD SPECIFIC WORKSHEET LISTENER (Event Delegation) ---
+    savedWorksheetsList.addEventListener('click', async (event) => {
+
+// --- Handler for LOAD WORKSHEET Button ---
+if (event.target.classList.contains('load-worksheet-button')) {
+    const button = event.target;
+    const worksheetId = button.dataset.worksheetId;
+    if (!worksheetId) return;
+
+    console.log(`Load worksheet button clicked for ID: ${worksheetId}`); // Correct log for loading
+    worksheetAssemblyArea.innerHTML = '<div class="loading">Loading worksheet items...</div>';
+    // Disable buttons while loading
+    button.disabled = true;
+    loadWorksheetsButton.disabled = true;
+    clearSheetButton.disabled = true;
+
+    try {
+        const response = await fetch(`/load_worksheet/${worksheetId}`);
+        const data = await response.json();
+
+        if (!response.ok || data.status !== 'success') {
+            throw new Error(data.message || `HTTP error! status: ${response.status}`);
+        }
+
+        // --- Rebuild Worksheet Assembly Area ---
+        worksheetAssemblyArea.innerHTML = '';
+        worksheetTitleInput.value = data.worksheet_title || '';
+
+        if (data.items && data.items.length > 0) {
+            data.items.forEach(itemData => {
+                const worksheetItem = document.createElement('div');
+                worksheetItem.classList.add('worksheet-item');
+                worksheetItem.dataset.generatedItemId = itemData.id;
+                // Apply styles (keep your existing style code)
+                worksheetItem.style.border = '1px solid #a0a0a0';
+                worksheetItem.style.padding = '15px';
+                worksheetItem.style.marginBottom = '15px';
+                worksheetItem.style.backgroundColor = 'white';
+                worksheetItem.style.overflow = 'hidden';
+
+                // Add controls (Remove, Move Up, Down) (keep your existing control creation code)
+                const controlsDiv = document.createElement('div');
+                controlsDiv.style.marginBottom = '10px'; controlsDiv.style.textAlign = 'right';
+                // Move Up Button code...
+                const moveUpButton = document.createElement('button'); moveUpButton.textContent = '⬆️ Up'; /* Add styles + onclick */ moveUpButton.style.backgroundColor = '#6c757d'; moveUpButton.style.color = 'white'; moveUpButton.style.padding = '3px 8px'; moveUpButton.style.fontSize = '0.8em'; moveUpButton.style.marginLeft = '5px'; moveUpButton.title = 'Move item up'; moveUpButton.onclick = () => { const currentItem = worksheetItem; const previousItem = currentItem.previousElementSibling; if (previousItem && previousItem.classList.contains('worksheet-item')) { worksheetAssemblyArea.insertBefore(currentItem, previousItem); }}; controlsDiv.appendChild(moveUpButton);
+                // Move Down Button code...
+                const moveDownButton = document.createElement('button'); moveDownButton.textContent = '⬇️ Down'; /* Add styles + onclick */ moveDownButton.style.backgroundColor = '#6c757d'; moveDownButton.style.color = 'white'; moveDownButton.style.padding = '3px 8px'; moveDownButton.style.fontSize = '0.8em'; moveDownButton.style.marginLeft = '5px'; moveDownButton.title = 'Move item down'; moveDownButton.onclick = () => { const currentItem = worksheetItem; const nextItem = currentItem.nextElementSibling; if (nextItem && nextItem.classList.contains('worksheet-item')) { worksheetAssemblyArea.insertBefore(nextItem, currentItem); }}; controlsDiv.appendChild(moveDownButton);
+                // Remove Button code...
+                const removeButton = document.createElement('button'); removeButton.textContent = '❌ Remove'; /* Add styles + onclick */ removeButton.style.backgroundColor = '#dc3545'; removeButton.style.color = 'white'; removeButton.style.padding = '3px 8px'; removeButton.style.fontSize = '0.8em'; removeButton.style.marginLeft = '5px'; removeButton.title = 'Remove item from worksheet'; removeButton.onclick = () => { worksheetItem.remove(); if (worksheetAssemblyArea.querySelectorAll('.worksheet-item').length === 0) {worksheetAssemblyArea.innerHTML = '<p style="color: grey; font-style: italic;">Items added to the worksheet will appear here.</p>';}}; controlsDiv.appendChild(removeButton);
+                worksheetItem.appendChild(controlsDiv);
+
+                // Add content (keep your existing content creation code)
+                const contentDiv = document.createElement('div');
+                contentDiv.style.clear = 'both';
+                contentDiv.innerHTML = itemData.content_html;
+                worksheetItem.appendChild(contentDiv);
+
+                // Append to assembly area
+                worksheetAssemblyArea.appendChild(worksheetItem);
+            });
+        } else {
+             worksheetAssemblyArea.innerHTML = '<p style="color: grey; font-style: italic;">Worksheet loaded but contains no items.</p>';
+        }
+        console.log(`Worksheet ${worksheetId} loaded successfully.`);
+
+    } catch (error) {
+        console.error(`Error loading worksheet ${worksheetId}:`, error);
+        worksheetAssemblyArea.innerHTML = `<p style="color: red;">Error loading worksheet: ${error.message}</p>`;
+    } finally {
+         // Re-enable buttons
+         loadWorksheetsButton.disabled = false;
+         clearSheetButton.disabled = false;
+         // Re-enable specific button?
+         // button.disabled = false; // Maybe not, let user reload list if needed
+    }
+} // --- END of 'load-worksheet-button' Handler ---
+
+
+// --- Handler for EXPORT DOCX Button ---
+else if (event.target.classList.contains('export-docx-button')) {
+    const button = event.target;
+    const worksheetId = button.dataset.worksheetId;
+    if (!worksheetId) {
+        console.error("Export DOCX button clicked but worksheet ID is missing.");
+        return;
+    }
+    // Use the CORRECT log message here
+    console.log(`Export DOCX button clicked for ID: ${worksheetId}`);
+    console.log(`Attempting to navigate to: /export/docx/${worksheetId}`); // Add this log
+
+    // Directly navigate to the export URL - the backend will handle the download
+    window.location.href = `/export/docx/${worksheetId}`;
+
+    // Optional: Add visual feedback? e.g., briefly disable button
+    button.disabled = true;
+    button.textContent = 'Exporting...'
+    setTimeout(() => { // Re-enable after a short delay
+         button.disabled = false;
+         button.textContent = 'Export DOCX';
+    }, 2000); // Re-enable after 2 seconds
+
+} // --- END of 'export-docx-button' Handler ---
+
+// --- Add other handlers (e.g., delete) using else if blocks here ---
+
+}); // --- END of savedWorksheetsList listener ---
+
+    // --- END OF LOAD SPECIFIC WORKSHEET LISTENER ---
         loadLibraryButton.addEventListener('click', async () => { /* ... Keep unchanged ... */
              libraryOutput.innerHTML = '<div class="loading">Loading library...</div>'; loadLibraryButton.disabled = true; try { const response = await fetch('/list_items'); const data = await response.json(); if (!response.ok || data.status !== 'success') { throw new Error(data.message || `HTTP error! Status: ${response.status}`); } if (data.items && data.items.length > 0) { libraryOutput.innerHTML = ''; const list = document.createElement('ul'); list.style.listStyle = 'none'; list.style.padding = '0'; data.items.forEach(item => { const listItem = document.createElement('li'); let description = `Type: ${item.item_type}`; if(item.source_topic) description += `, Topic: ${item.source_topic}`; if(item.source_url) description += `, URL: <small>${item.source_url}</small>`; description += `, Grade: ${item.grade_level}`; listItem.innerHTML = `<strong>ID: ${item.id}</strong> - ${description} <br><small>Last Modified: ${new Date(item.last_modified).toLocaleString()}</small><button data-item-id="${item.id}" class="load-item-button" style="margin-left: 15px; padding: 2px 8px; font-size: 0.8em;">Load Item</button>`; list.appendChild(listItem); }); libraryOutput.appendChild(list); } else { libraryOutput.innerHTML = '<p>No saved items found in the library.</p>'; } } catch (error) { console.error("Error loading library:", error); libraryOutput.innerHTML = `<p style="color: red;">Error loading library: ${error.message}</p>`; } finally { loadLibraryButton.disabled = false; }
         });
@@ -793,6 +1030,10 @@
     // Ensure editing is off before adding
     if (isEditingEnabled) {
         alert("Please disable editing before adding the item to the worksheet.");
+        return;
+    }
+    if (currentPreviewItemId === null) {
+        alert("Cannot add item to worksheet. Please save the current item first, or load an existing item from the library.");
         return;
     }
 
@@ -808,6 +1049,7 @@
     // --- Create a wrapper div for the item on the worksheet ---
     const worksheetItem = document.createElement('div');
     worksheetItem.classList.add('worksheet-item'); // For potential future styling/identification
+    worksheetItem.dataset.generatedItemId = currentPreviewItemId;
     // Add some basic inline styles for visibility for now
     worksheetItem.style.border = '1px solid #a0a0a0';
     worksheetItem.style.padding = '15px';
@@ -819,14 +1061,84 @@
     const controlsDiv = document.createElement('div');
     controlsDiv.style.marginBottom = '10px'; // Space below controls
 
+
+// --- Add controls to the item (Remove, Move Up, Move Down) ---
+    controlsDiv.style.marginBottom = '10px';
+    controlsDiv.style.textAlign = 'right'; // Align buttons to the right
+
+    // MOVE UP BUTTON
+    const moveUpButton = document.createElement('button');
+    moveUpButton.textContent = '⬆️ Up'; // Or use text 'Up'
+    moveUpButton.style.backgroundColor = '#6c757d'; // Grey
+    moveUpButton.style.color = 'white';
+    moveUpButton.style.padding = '3px 8px';
+    moveUpButton.style.fontSize = '0.8em';
+    moveUpButton.style.marginLeft = '5px';
+    moveUpButton.title = 'Move item up'; // Tooltip
+    moveUpButton.onclick = () => {
+        const currentItem = worksheetItem; // The item this button belongs to
+        const previousItem = currentItem.previousElementSibling;
+        // Check if it's not the first item (previousElementSibling exists and is a worksheet item)
+        if (previousItem && previousItem.classList.contains('worksheet-item')) {
+            worksheetAssemblyArea.insertBefore(currentItem, previousItem);
+            console.log("Moved item up.");
+        } else {
+            console.log("Cannot move first item up.");
+        }
+    };
+    controlsDiv.appendChild(moveUpButton);
+
+    // MOVE DOWN BUTTON
+    const moveDownButton = document.createElement('button');
+    moveDownButton.textContent = '⬇️ Down'; // Or use text 'Down'
+    moveDownButton.style.backgroundColor = '#6c757d'; // Grey
+    moveDownButton.style.color = 'white';
+    moveDownButton.style.padding = '3px 8px';
+    moveDownButton.style.fontSize = '0.8em';
+    moveDownButton.style.marginLeft = '5px';
+    moveDownButton.title = 'Move item down'; // Tooltip
+    moveDownButton.onclick = () => {
+        const currentItem = worksheetItem;
+        const nextItem = currentItem.nextElementSibling;
+         // Check if it's not the last item (nextElementSibling exists)
+         // We assume anything after it would also be a worksheet-item if present
+        if (nextItem && nextItem.classList.contains('worksheet-item')) {
+            // Insert the *next* item before the *current* item, effectively moving current down
+            worksheetAssemblyArea.insertBefore(nextItem, currentItem);
+            console.log("Moved item down.");
+        } else {
+            console.log("Cannot move last item down.");
+        }
+    };
+    controlsDiv.appendChild(moveDownButton);
+
+    // REMOVE BUTTON (Keep existing logic)
     const removeButton = document.createElement('button');
-    removeButton.textContent = 'Remove';
-    removeButton.style.float = 'right';
+    removeButton.textContent = '❌ Remove'; // Or use text 'Remove'
+    // removeButton.style.float = 'right'; // No longer needed with textAlign: right on container
     removeButton.style.backgroundColor = '#dc3545'; // Red color
     removeButton.style.color = 'white';
-    removeButton.style.padding = '3px 8px'; // Smaller padding
-    removeButton.style.fontSize = '0.8em'; // Smaller font
+    removeButton.style.padding = '3px 8px';
+    removeButton.style.fontSize = '0.8em';
+    removeButton.style.marginLeft = '5px';
+    removeButton.title = 'Remove item from worksheet'; // Tooltip
+    removeButton.onclick = () => {
+         worksheetItem.remove();
+         console.log("Worksheet item removed.");
+         if (worksheetAssemblyArea.querySelectorAll('.worksheet-item').length === 0) {
+              worksheetAssemblyArea.innerHTML = '<p style="color: grey; font-style: italic;">Items added to the worksheet will appear here.</p>';
+         }
+    };
+    controlsDiv.appendChild(removeButton); // Add remove button last
 
+    // Add controls div to the top of the item wrapper
+    worksheetItem.appendChild(controlsDiv);
+
+    // --- Add the actual content from the preview ---
+    const contentDiv = document.createElement('div');
+    contentDiv.style.clear = 'both'; // Ensure content clears floated button
+    contentDiv.innerHTML = previewContent;
+    worksheetItem.appendChild(contentDiv);
     // Define what happens when the remove button is clicked
     removeButton.onclick = () => {
          worksheetItem.remove(); // Remove the entire item div
@@ -843,7 +1155,6 @@
     worksheetItem.appendChild(controlsDiv);
 
     // --- Add the actual content from the preview ---
-    const contentDiv = document.createElement('div');
     contentDiv.style.clear = 'both'; // Ensure content clears floated button
     contentDiv.innerHTML = previewContent; // Put the preview HTML inside this div
     worksheetItem.appendChild(contentDiv); // Add content div to the item wrapper
@@ -867,7 +1178,8 @@
 });
 
         libraryOutput.addEventListener('click', async (event) => { /* ... Keep unchanged ... */
-             if (event.target.classList.contains('load-item-button')) { const button = event.target; const itemId = button.dataset.itemId; if (!itemId) { console.error("Load button clicked but item ID is missing."); return; } console.log(`Load button clicked for item ID: ${itemId}`); libraryOutput.querySelectorAll('.load-item-button').forEach(btn => btn.disabled = true); itemPreviewArea.innerHTML = '<div class="loading">Loading item...</div>'; toggleEditButton.disabled = true; saveButton.disabled = true;addToSheetButton.disabled = true; try { const response = await fetch(`/get_item/${itemId}`); const data = await response.json(); if (!response.ok || data.status !== 'success') { throw new Error(data.message || `HTTP error! Status: ${response.status}`); } if (data.item && data.item.content_html) { itemPreviewArea.innerHTML = data.item.content_html; toggleEditButton.disabled = false; saveButton.disabled = false; isEditingEnabled = false; toggleEditButton.textContent = 'Enable Editing'; saveButton.textContent = 'Save to Library'; itemPreviewArea.scrollIntoView({ behavior: 'smooth', block: 'start' }); console.log(`Successfully loaded item ${itemId} into editor.`); } else { throw new Error("Item data received successfully, but content_html was missing."); } } catch (error) { console.error(`Error loading item ${itemId}:`, error); itemPreviewArea.innerHTML = `<p style="color: red;">Error loading item: ${error.message}</p>`; toggleEditButton.disabled = true; saveButton.disabled = true;addToSheetButton.disabled = true; } finally { libraryOutput.querySelectorAll('.load-item-button').forEach(btn => btn.disabled = false); } }
+             if (event.target.classList.contains('load-item-button')) { const button = event.target; const itemId = button.dataset.itemId; if (!itemId) { console.error("Load button clicked but item ID is missing."); return; } console.log(`Load button clicked for item ID: ${itemId}`); libraryOutput.querySelectorAll('.load-item-button').forEach(btn => btn.disabled = true); itemPreviewArea.innerHTML = '<div class="loading">Loading item...</div>'; toggleEditButton.disabled = true; saveButton.disabled = true;addToSheetButton.disabled = true; try { const response = await fetch(`/get_item/${itemId}`); const data = await response.json(); if (!response.ok || data.status !== 'success') { throw new Error(data.message || `HTTP error! Status: ${response.status}`); } if (data.item && data.item.content_html) { itemPreviewArea.innerHTML = data.item.content_html; currentPreviewItemId = data.item.id;
+                console.log(`Successfully loaded item ${itemId}. Stored ID: ${currentPreviewItemId}`); toggleEditButton.disabled = false; saveButton.disabled = false; addToSheetButton.disabled = false; isEditingEnabled = false; toggleEditButton.textContent = 'Enable Editing'; saveButton.textContent = 'Save to Library'; itemPreviewArea.scrollIntoView({ behavior: 'smooth', block: 'start' }); console.log(`Successfully loaded item ${itemId} into editor.`); } else { throw new Error("Item data received successfully, but content_html was missing."); } } catch (error) { console.error(`Error loading item ${itemId}:`, error); itemPreviewArea.innerHTML = `<p style="color: red;">Error loading item: ${error.message}</p>`; toggleEditButton.disabled = true; saveButton.disabled = true;addToSheetButton.disabled = true; } finally { libraryOutput.querySelectorAll('.load-item-button').forEach(btn => btn.disabled = false); } }
         });
         clearSheetButton.addEventListener('click', () => {
     // Ask for confirmation
