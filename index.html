@@ -72,6 +72,7 @@
             <input type="radio" id="modeSimilarQ" name="generatorMode" value="similarQ">
             <label for="modeSimilarQ">Similar Calculation Problems</label>
         </div>
+        <div><input type="radio" id="modeWordSearch" name="generatorMode" value="wordSearch"><label for="modeWordSearch">Word Search (from Topic)</label></div>
         <!-- ** END ADDED DIV ** -->
     </fieldset>
 
@@ -177,6 +178,25 @@
      </fieldset>
  </div>
  <!-- ** END OF NEW INPUT SECTION ** -->
+  <!-- Inputs for Word Search (Initially Hidden) -->
+  <div id="wordSearchInputs" class="hidden">
+    <fieldset>
+        <legend>Word Search Options</legend>
+        <!-- Start with Topic/Grade to generate word list -->
+        <div> <label for="wsTopicInput">Enter Topic:</label> <input type="text" id="wsTopicInput" placeholder="e.g., Ancient Egypt"> </div>
+        <div> <label for="wsGradeLevelSelect">Grade Level:</label>
+            <select id="wsGradeLevelSelect" name="ws_grade_level">
+                <option value="elementary school">Elementary</option>
+                <option value="middle school" selected>Middle</option>
+                <option value="high school">High</option>
+                <option value="university">University</option>
+                <option value="general adult">Adult</option>
+            </select>
+         </div>
+         <!-- Word list editor and size select will be added here dynamically by JS -->
+         <div id="wordSearchDynamicControls"></div>
+    </fieldset>
+</div>
     <!-- Generate Button -->
     <button id="generateButton">Generate New</button>
 
@@ -220,6 +240,9 @@
         const shortAnswerInputsDiv = document.getElementById('shortAnswerInputs');
         const textBlockInputsDiv = document.getElementById('textBlockInputs');
         const similarQInputsDiv = document.getElementById('similarQInputs');
+        const modeWordSearchRadio = document.getElementById('modeWordSearch');
+        const wordSearchInputsDiv = document.getElementById('wordSearchInputs');
+        const wordSearchDynamicControls = document.getElementById('wordSearchDynamicControls');
         const topicInput = document.getElementById('topicInput');
         const gradeLevelSelect = document.getElementById('gradeLevelSelect');
         const gfNumSentencesInput = document.getElementById('gfNumSentencesInput');
@@ -272,44 +295,75 @@
 
         // ** FIXED handleModeChange Function **
         function handleModeChange() {
-    console.log("--- handleModeChange START ---"); // Keep logs for now
-    currentPreviewItemId = null;
-    console.log("handleModeChange: currentPreviewItemId reset to null");
-    // Hide all input sections first
-    gapFillInputsDiv.classList.add('hidden');
-    pastedTextInputsDiv.classList.add('hidden');
-    mcqInputsDiv.classList.add('hidden');
-    trueFalseInputsDiv.classList.add('hidden');
-    shortAnswerInputsDiv.classList.add('hidden');
-    textBlockInputsDiv.classList.add('hidden');
-    similarQInputsDiv.classList.add('hidden');
+            console.log("--- handleModeChange START ---");
+            currentPreviewItemId = null; // Reset ID whenever mode changes
+            console.log("handleModeChange: currentPreviewItemId reset to null");
 
-    // Show the selected one
-    if (modeTextBlockRadio.checked) {
-        console.log("Mode detected: Text Block");
-        textBlockInputsDiv.classList.remove('hidden'); handleTbCheckboxChange();
-    } else if (modePastedTextRadio.checked) {
-         console.log("Mode detected: Pasted Text");
-         pastedTextInputsDiv.classList.remove('hidden');
-    } else if (modeMcqRadio.checked) {
-        console.log("Mode detected: MCQ");
-        mcqInputsDiv.classList.remove('hidden');
-    } else if (modeTrueFalseRadio.checked) {
-        console.log("Mode detected: True/False");
-        trueFalseInputsDiv.classList.remove('hidden');
-    } else if (modeShortAnswerRadio.checked) {
-        console.log("Mode detected: Short Answer");
-        shortAnswerInputsDiv.classList.remove('hidden');
-    } else if (modeSimilarQRadio.checked) { // <-- Add condition for SimilarQ
-        console.log("Mode detected: Similar Questions");
-        similarQInputsDiv.classList.remove('hidden');
-    }
-    // *** FIXED: Explicitly handle Gap Fill (or treat as default) ***
-    else { // Catches modeGapFillRadio.checked or initial state
-        console.log("Mode detected: Default (Gap Fill)");
-        gapFillInputsDiv.classList.remove('hidden');
-    }
-    console.log("--- handleModeChange END ---");
+            // --- Hide all input sections first ---
+            gapFillInputsDiv.classList.add('hidden');
+            pastedTextInputsDiv.classList.add('hidden');
+            mcqInputsDiv.classList.add('hidden');
+            trueFalseInputsDiv.classList.add('hidden');
+            shortAnswerInputsDiv.classList.add('hidden');
+            textBlockInputsDiv.classList.add('hidden');
+            similarQInputsDiv.classList.add('hidden');
+            wordSearchInputsDiv.classList.add('hidden');
+            // Clear dynamic area if it exists from previous mode
+            if (wordSearchDynamicControls) {
+                 wordSearchDynamicControls.innerHTML = '';
+            }
+
+            // --- Reset main generate button state ---
+            generateButton.textContent = 'Generate New';
+            generateButton.disabled = false; // Re-enable if it was disabled
+
+            // --- Show the selected input section ---
+            if (modeTextBlockRadio.checked) {
+                console.log("Mode detected: Text Block");
+                textBlockInputsDiv.classList.remove('hidden');
+                handleTbCheckboxChange(); // Call helper for checkbox state
+            } else if (modePastedTextRadio.checked) {
+                 console.log("Mode detected: Pasted Text");
+                 pastedTextInputsDiv.classList.remove('hidden');
+            } else if (modeMcqRadio.checked) {
+                console.log("Mode detected: MCQ");
+                mcqInputsDiv.classList.remove('hidden');
+            } else if (modeTrueFalseRadio.checked) {
+                console.log("Mode detected: True/False");
+                trueFalseInputsDiv.classList.remove('hidden');
+            } else if (modeShortAnswerRadio.checked) {
+                console.log("Mode detected: Short Answer");
+                shortAnswerInputsDiv.classList.remove('hidden');
+            } else if (modeSimilarQRadio.checked) {
+                console.log("Mode detected: Similar Questions");
+                similarQInputsDiv.classList.remove('hidden');
+            } else if (modeWordSearchRadio.checked) { // Line ~360
+                console.log("Mode detected: Word Search");
+                wordSearchInputsDiv.classList.remove('hidden');
+                generateButton.textContent = 'Get Word List';
+            } // <<< MAKE SURE THIS CLOSING BRACE IS PRESENT AND HAS NO SEMICOLON AFTER IT
+            else { // Default case (Gap Fill) // <<< This is line ~366
+                console.log("Mode detected: Default (Gap Fill)");
+                gapFillInputsDiv.classList.remove('hidden');
+            }
+            
+            // --- End of showing selected section ---
+
+            // --- Reset output area and editor/action buttons ---
+            // This happens regardless of which mode was selected
+            itemPreviewArea.innerHTML = 'Enter details for the selected mode and click Generate.';
+            toggleEditButton.disabled = true;
+            saveButton.disabled = true;
+            addToSheetButton.disabled = true;
+            toggleEditButton.textContent = 'Enable Editing';
+            if (isEditingEnabled) { // If editing was left on from previous item
+                itemPreviewArea.style.border = '1px solid #ccc'; // Reset border
+                isEditingEnabled = false; // Reset editing state flag
+            }
+
+            console.log("--- handleModeChange END ---");
+        }
+
 
     // Reset output and buttons
     itemPreviewArea.innerHTML = 'Enter details for the selected mode and click Generate.';
@@ -321,7 +375,7 @@
         itemPreviewArea.style.border = '1px solid #ccc';
         isEditingEnabled = false;
     }
-}
+
 
         // --- Parsing Functions (Keep all 6 definitions) ---
         function parseAndStructureGapFill(rawText) { /* ... Full function ... */
@@ -412,8 +466,7 @@
 
             return `<div class="worksheet-section"><h3>Similar Questions (Format Issue?)</h3><div>${fallbackHtml}</div></div>`;
         }
-
-
+        
         let structuredHtml = "";
 
         // --- Display Questions Part ONLY ---
@@ -449,6 +502,147 @@
         console.log("Finished parsing Similar Questions.");
         return structuredHtml;
     }
+    function displayWordListEditor(wordListText) {
+            // Find the container for dynamic controls within the word search input div
+            const dynamicControlsContainer = document.getElementById('wordSearchDynamicControls');
+            if (!dynamicControlsContainer) {
+                console.error("Could not find wordSearchDynamicControls container!");
+                return;
+            }
+
+            // Clear previous dynamic controls if any
+            dynamicControlsContainer.innerHTML = '';
+
+            // 1. Parse the word list text
+            const words = wordListText.split('\n')
+                .map(line => line.replace(/^\d+\.\s*/, '').trim()) // Remove numbering, trim whitespace
+                .filter(word => word.length > 0); // Remove empty lines
+
+            // 2. Create Textarea for editing
+            const wordListLabel = document.createElement('label');
+            wordListLabel.htmlFor = 'wordListEditArea';
+            wordListLabel.textContent = 'Edit Word List (one word/phrase per line):';
+            wordListLabel.style.marginTop = '15px'; // Add some top margin
+            const wordListTextArea = document.createElement('textarea');
+            wordListTextArea.id = 'wordListEditArea';
+            wordListTextArea.rows = 10; // Adjust size as needed
+            wordListTextArea.value = words.join('\n'); // Populate with one word per line
+            // Inherit some basic styles if needed, otherwise rely on global styles
+            wordListTextArea.style.maxWidth = '450px';
+            wordListTextArea.style.width = '100%';
+
+            // 3. Create Size Selector
+            const sizeLabel = document.createElement('label');
+            sizeLabel.htmlFor = 'wordSearchSizeSelect';
+            sizeLabel.textContent = 'Select Grid Size:';
+            sizeLabel.style.marginTop = '15px';
+            const sizeSelect = document.createElement('select');
+            sizeSelect.id = 'wordSearchSizeSelect';
+            sizeSelect.style.marginBottom = '15px'; // Add bottom margin
+            const sizes = { "small": "Small (~10x10)", "medium": "Medium (~13x13)", "large": "Large (~15x15)" };
+            for (const [value, text] of Object.entries(sizes)) {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = text;
+                if (value === 'medium') option.selected = true; // Default selection
+                sizeSelect.appendChild(option);
+            }
+
+            // 4. Create "Generate Grid" Button
+            const generateGridButton = document.createElement('button');
+            generateGridButton.id = 'generateGridButton';
+            generateGridButton.textContent = 'Generate Word Search Grid';
+            generateGridButton.style.marginLeft = '0'; // Override default button margin if needed
+
+            // 5. Add Event Listener to the new button
+            generateGridButton.addEventListener('click', handleGenerateGridClick);
+
+            // 6. Append new elements to the container
+            // Hide the original Topic/Grade inputs within the word search fieldset
+            document.getElementById('wsTopicInput').parentElement.style.display = 'none';
+            document.getElementById('wsGradeLevelSelect').parentElement.style.display = 'none';
+
+            // Append the new controls
+            dynamicControlsContainer.appendChild(wordListLabel);
+            dynamicControlsContainer.appendChild(wordListTextArea);
+            dynamicControlsContainer.appendChild(document.createElement('br')); // Spacing
+            dynamicControlsContainer.appendChild(sizeLabel);
+            dynamicControlsContainer.appendChild(sizeSelect);
+            dynamicControlsContainer.appendChild(document.createElement('br')); // Spacing
+            dynamicControlsContainer.appendChild(generateGridButton);
+
+            console.log("Word list editor UI displayed.");
+        }
+        async function handleGenerateGridClick() {
+            console.log(">>> Generate Grid button clicked <<<");
+
+            // Disable button immediately
+            const generateGridButton = document.getElementById('generateGridButton');
+            if (generateGridButton) generateGridButton.disabled = true;
+
+            // 1. Get words from textarea
+            const wordListTextArea = document.getElementById('wordListEditArea');
+            const wordsRaw = wordListTextArea.value.trim();
+            const words = wordsRaw.split('\n')
+                                .map(word => word.trim())
+                                .filter(word => word.length > 0);
+
+            if (words.length === 0) {
+                alert("Word list is empty. Please enter words.");
+                if (generateGridButton) generateGridButton.disabled = false;
+                return;
+            }
+
+            // 2. Get selected size
+            const sizeSelect = document.getElementById('wordSearchSizeSelect');
+            const selectedSize = sizeSelect.value;
+
+            // 3. Prepare payload for backend
+            const payload = {
+                word_list: words,
+                size: selectedSize
+                // Add allow_backwards or mask options here if you implement UI for them later
+            };
+
+            console.log("Sending payload to /generate_word_search_grid:", payload);
+            itemPreviewArea.innerHTML = '<div class="loading">Generating grid...</div>'; // Show loading in preview
+            toggleEditButton.disabled = true; saveButton.disabled = true; addToSheetButton.disabled = true; // Disable actions
+
+            // 4. Fetch request to backend
+            try {
+                const response = await fetch('/generate_word_search_grid', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+                console.log("Received response from grid generation:", data);
+
+                if (!response.ok) {
+                    throw new Error(data.message || `HTTP error! status: ${response.status}`);
+                }
+
+                if (data.status === 'success' && data.content_html) {
+                    itemPreviewArea.innerHTML = data.content_html; // Display grid HTML
+                    // Grid generation successful - enable final actions
+                    toggleEditButton.disabled = false; // Allow editing (though maybe less useful for grid?)
+                    saveButton.disabled = false;    // Allow saving the generated item
+                    addToSheetButton.disabled = false; // Allow adding to worksheet
+                    // Optionally hide or keep the grid generation controls? Hiding for now.
+                    // wordSearchDynamicControls.style.display = 'none';
+                } else {
+                    throw new Error(data.message || 'Grid generation failed on the server.');
+                }
+
+            } catch (error) {
+                console.error("Error generating word search grid:", error);
+                itemPreviewArea.innerHTML = `<p style="color: red;">Error generating grid: ${error.message}. Please check word lengths or grid size.</p>`;
+                // Re-enable button on error
+                if (generateGridButton) generateGridButton.disabled = false;
+                // Keep main action buttons disabled
+                toggleEditButton.disabled = true; saveButton.disabled = true; addToSheetButton.disabled = true;
+            }
+        }
         function parseAndStructurePastedComprehension(rawText) {
     console.log("Parsing Pasted Text Comprehension:", rawText.substring(0, 150) + "...");
     // This will be similar to Short Answer or MCQ parsing, expecting Questions + Key
@@ -526,142 +720,123 @@
         modeTextBlockRadio.addEventListener('change', handleModeChange);
         tbGenerateTextCheckbox.addEventListener('change', handleTbCheckboxChange); // Listener for TextBlock checkbox
         modeSimilarQRadio.addEventListener('change', handleModeChange);
-
+        modeWordSearchRadio.addEventListener('change', handleModeChange); // <<< ADD LISTENER
+        tbGenerateTextCheckbox.addEventListener('change', handleTbCheckboxChange);
         generateButton.addEventListener('click', async () => {
-            console.log(">>> generateButton clicked! <<<"); // Log entry
-            currentPreviewItemId = null;
+            console.log(">>> generateButton clicked! <<<");
+            currentPreviewItemId = null; // Reset item ID tracking
             console.log("Generate Button: currentPreviewItemId reset to null");
 
-            // --- Declare ALL potential payload variables OUTSIDE the blocks ---
-            let fetchUrl = '';
-            let isValid = true; // Use this for input validation ONLY
-            let useDirectText = false; // Flag for text block mode
             const selectedMode = document.querySelector('input[name="generatorMode"]:checked').value;
-
-            // Variables for payload - initialize to null or default
-            let topic = null;
-            let gradeLevel = null;
-            let numQuestions = null;
-            let numSentences = null; // Use specific name for gap-fill number
-            let numStatements = null;
-            let youtubeUrl = null; // Keep for reference, though unused now
-            let pastedText = null;
-            let exampleQuestion = null;
+            console.log(">>> Mode Selected:", selectedMode);
 
             // --- Reset UI ---
             itemPreviewArea.innerHTML = '<div class="loading">Generating... Please wait.</div>';
-            // Separate button state lines
-            generateButton.disabled = true;
+            generateButton.disabled = true; // Disable button during processing
             toggleEditButton.disabled = true;
             saveButton.disabled = true;
             addToSheetButton.disabled = true;
             toggleEditButton.textContent = 'Enable Editing';
             if (isEditingEnabled) { itemPreviewArea.style.border = '1px solid #ccc'; isEditingEnabled = false; }
 
-            console.log(">>> Mode Selected:", selectedMode);
+            // --- Prepare Payload & Validation ---
+            let fetchUrl = '';
+            let payload = { item_type: selectedMode }; // Include type early
+            let isValid = true;
+            let isWordListRequest = false; // Flag for the first step of word search
+            let useDirectText = false;
 
-            // --- Prepare fetchUrl and Assign outer variables based on mode & Validate ---
             if (selectedMode === 'gapFill') {
-                topic = topicInput.value.trim();
-                gradeLevel = gradeLevelSelect.value;
-                numSentences = parseInt(gfNumSentencesInput.value, 10) || 7; // Use specific variable
-                if (!topic) { itemPreviewArea.innerHTML = '<p style="color: red;">Please enter a topic.</p>'; isValid = false; }
-                else if (numSentences < 3 || numSentences > 15) { itemPreviewArea.innerHTML = '<p style="color: red;">Please enter a number of sentences between 3 and 15.</p>'; isValid = false; }
+                payload.topic = topicInput.value.trim();
+                payload.grade_level = gradeLevelSelect.value;
+                payload.num_sentences = parseInt(gfNumSentencesInput.value, 10) || 7;
+                if (!payload.topic) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Please enter a topic.</p>'; }
+                else if (payload.num_sentences < 3 || payload.num_sentences > 15) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Sentences must be 3-15.</p>'; }
                 else { fetchUrl = '/generate_worksheet'; }
             } else if (selectedMode === 'textBlock') {
                 const generate = tbGenerateTextCheckbox.checked;
-                topic = tbTopicInput.value.trim();
-                gradeLevel = tbGradeLevelSelect.value;
-                const directTextValue = tbDirectInput.value.trim(); // Use temp var
-                if (generate && !topic) { itemPreviewArea.innerHTML = '<p style="color: red;">Please enter a topic for AI generation.</p>'; isValid = false; }
-                else if (!generate && !directTextValue) { itemPreviewArea.innerHTML = '<p style="color: red;">Please enter your text directly, or check the box.</p>'; isValid = false; }
-                else { if (generate) { fetchUrl = '/generate_text_block'; } else { useDirectText = true; } } // Set flag OR url
+                const directTextValue = tbDirectInput.value.trim();
+                if (generate) {
+                    payload.topic = tbTopicInput.value.trim();
+                    payload.grade_level = tbGradeLevelSelect.value;
+                    if (!payload.topic) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Please enter topic for AI generation.</p>'; }
+                    else { fetchUrl = '/generate_text_block'; }
+                } else { // Direct text input
+                    if (!directTextValue) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Enter text directly or check box.</p>'; }
+                    else { useDirectText = true; } // Handled below, no fetch
+                }
             } else if (selectedMode === 'pastedText') {
-                pastedText = pastedTextInputArea.value; // Keep raw value with newlines
-                numQuestions = parseInt(ptNumQuestionsInput.value, 10) || 5;
-                if (!pastedText || !pastedText.trim()) { itemPreviewArea.innerHTML = '<p style="color: red;">Please paste the text for comprehension.</p>'; isValid = false; }
-                else if (numQuestions < 2 || numQuestions > 15) { itemPreviewArea.innerHTML = '<p style="color: red;">Please enter # questions between 2 and 15.</p>'; isValid = false; }
-                else { fetchUrl = '/generate_pasted_comprehension'; }
-                topic = null; gradeLevel = "mixed"; numStatements = null; youtubeUrl = null; exampleQuestion = null; // Reset others
+                payload.pasted_text = pastedTextInputArea.value; // Keep raw
+                payload.num_questions = parseInt(ptNumQuestionsInput.value, 10) || 5;
+                if (!payload.pasted_text || !payload.pasted_text.trim()) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Please paste text.</p>'; }
+                else if (payload.num_questions < 2 || payload.num_questions > 15) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Questions must be 2-15.</p>'; }
+                else { fetchUrl = '/generate_pasted_comprehension'; payload.grade_level = "mixed"; } // Set default grade
             } else if (selectedMode === 'mcq') {
-                topic = mcqTopicInput.value.trim();
-                gradeLevel = mcqGradeLevelSelect.value;
-                numQuestions = parseInt(mcqNumQuestionsInput.value, 10) || 5;
-                if (!topic) { itemPreviewArea.innerHTML = '<p style="color: red;">Please enter a topic for MCQs.</p>'; isValid = false; }
-                else if (numQuestions < 2 || numQuestions > 15) { itemPreviewArea.innerHTML = '<p style="color: red;"># questions must be 2-15.</p>'; isValid = false; }
+                payload.topic = mcqTopicInput.value.trim();
+                payload.grade_level = mcqGradeLevelSelect.value;
+                payload.num_questions = parseInt(mcqNumQuestionsInput.value, 10) || 5;
+                if (!payload.topic) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Please enter topic.</p>'; }
+                else if (payload.num_questions < 2 || payload.num_questions > 15) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Questions must be 2-15.</p>'; }
                 else { fetchUrl = '/generate_mcq'; }
             } else if (selectedMode === 'trueFalse') {
-                topic = tfTopicInput.value.trim();
-                gradeLevel = tfGradeLevelSelect.value;
-                numStatements = parseInt(tfNumStatementsInput.value, 10) || 8;
-                if (!topic) { itemPreviewArea.innerHTML = '<p style="color: red;">Please enter a topic for T/F.</p>'; isValid = false; }
-                else if (numStatements < 3 || numStatements > 20) { itemPreviewArea.innerHTML = '<p style="color: red;"># statements must be 3-20.</p>'; isValid = false; }
+                payload.topic = tfTopicInput.value.trim();
+                payload.grade_level = tfGradeLevelSelect.value;
+                payload.num_statements = parseInt(tfNumStatementsInput.value, 10) || 8;
+                if (!payload.topic) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Please enter topic.</p>'; }
+                else if (payload.num_statements < 3 || payload.num_statements > 20) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Statements must be 3-20.</p>'; }
                 else { fetchUrl = '/generate_true_false'; }
             } else if (selectedMode === 'shortAnswer') {
-                topic = saTopicInput.value.trim();
-                gradeLevel = saGradeLevelSelect.value;
-                numQuestions = parseInt(saNumQuestionsInput.value, 10) || 5;
-                if (!topic) { itemPreviewArea.innerHTML = '<p style="color: red;">Please enter a topic for SA.</p>'; isValid = false; }
-                else if (numQuestions < 2 || numQuestions > 10) { itemPreviewArea.innerHTML = '<p style="color: red;"># questions must be 2-10.</p>'; isValid = false; }
+                payload.topic = saTopicInput.value.trim();
+                payload.grade_level = saGradeLevelSelect.value;
+                payload.num_questions = parseInt(saNumQuestionsInput.value, 10) || 5;
+                if (!payload.topic) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Please enter topic.</p>'; }
+                else if (payload.num_questions < 2 || payload.num_questions > 10) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Questions must be 2-10.</p>'; }
                 else { fetchUrl = '/generate_short_answer'; }
             } else if (selectedMode === 'similarQ') {
-                exampleQuestion = sqExampleInput.value; // Keep raw value
-                numQuestions = parseInt(sqNumQuestionsInput.value, 10) || 3;
-                gradeLevel = sqGradeLevelSelect.value;
-                if (!exampleQuestion || !exampleQuestion.trim()) { itemPreviewArea.innerHTML = '<p style="color: red;">Please paste the example question.</p>'; isValid = false; }
-                else if (numQuestions < 1 || numQuestions > 10) { itemPreviewArea.innerHTML = '<p style="color: red;"># questions must be 1-10.</p>'; isValid = false; }
+                payload.example_question = sqExampleInput.value; // Keep raw
+                payload.num_questions = parseInt(sqNumQuestionsInput.value, 10) || 3;
+                payload.grade_level = sqGradeLevelSelect.value;
+                if (!payload.example_question || !payload.example_question.trim()) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Please paste example question.</p>'; }
+                else if (payload.num_questions < 1 || payload.num_questions > 10) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Questions must be 1-10.</p>'; }
                 else { fetchUrl = '/generate_similar_questions'; }
-                topic = null; numStatements = null; youtubeUrl = null; pastedText = null; // Reset others
-            } else {
-                // Should not happen with radio buttons, but good fallback
-                itemPreviewArea.innerHTML = '<p style="color: red;">Invalid mode selected.</p>';
+            // --- ADDED: Word Search Mode Handling ---
+            } else if (selectedMode === 'wordSearch') {
+                // This click is for the FIRST step: getting the word list
+                isWordListRequest = true; // Set flag
+                payload.topic = document.getElementById('wsTopicInput').value.trim(); // Use specific ID
+                payload.grade_level = document.getElementById('wsGradeLevelSelect').value; // Use specific ID
+                // Optional: Add num_words input if desired
+                // payload.num_words = parseInt(document.getElementById('wsNumWords').value, 10) || 15;
+                if (!payload.topic) { isValid = false; itemPreviewArea.innerHTML = '<p style="color: red;">Please enter topic.</p>'; }
+                else { fetchUrl = '/generate_word_list'; } // Target the word list route
+            }
+            // --- End Word Search Mode ---
+            else {
+                itemPreviewArea.innerHTML = '<p style="color: red;">Invalid mode selected (JS Error).</p>';
                 isValid = false;
             }
-            // --- End of Prepare / Validate ---
 
-            // Exit if validation failed
+            // --- Exit if validation failed ---
             if (!isValid) {
-                 if (!itemPreviewArea.innerHTML.includes('color: red')) { itemPreviewArea.innerHTML = '<p style="color: red;">Please check your inputs.</p>'; }
-                 generateButton.disabled = false; // Re-enable only Generate
-                 toggleEditButton.disabled = true; saveButton.disabled = true; addToSheetButton.disabled = true; // Keep others disabled
+                 if (!itemPreviewArea.innerHTML.includes('color: red')) { itemPreviewArea.innerHTML = '<p style="color: red;">Input error.</p>'; }
+                 generateButton.disabled = false; // Re-enable button
+                 // Ensure other buttons remain disabled
+                 toggleEditButton.disabled = true; saveButton.disabled = true; addToSheetButton.disabled = true;
                  return;
             }
 
-            // Handle Direct Text case (no API call)
+            // --- Handle Direct Text (no fetch needed) ---
             if (useDirectText) {
                  console.log("Using direct text input.");
-                 const directTextContent = tbDirectInput.value; // Use original value
-                 itemPreviewArea.innerHTML = parseAndStructureTextBlock(directTextContent); // Use parser
-                 // Enable buttons for direct text
-                 toggleEditButton.disabled = false; saveButton.disabled = false; addToSheetButton.disabled = false;
-                 isEditingEnabled = false; toggleEditButton.textContent = 'Enable Editing'; saveButton.textContent = 'Save to Library';
+                 const directTextContent = tbDirectInput.value;
+                 itemPreviewArea.innerHTML = parseAndStructureTextBlock(directTextContent);
+                 toggleEditButton.disabled = false; saveButton.disabled = false; addToSheetButton.disabled = false; // Enable actions
                  generateButton.disabled = false; // Re-enable generate button
-                 return; // Exit listener early
+                 return; // Exit listener
             }
 
-            // Build the Payload Object only if we have a fetchUrl
+            // --- Make API Call (if fetchUrl is set) ---
             if (fetchUrl) {
-                 payload = { item_type: selectedMode }; // Start with common field
-
-                 // Add fields conditionally based on the outer variables that were assigned
-                 if (topic !== null) payload.topic = topic;
-                 if (gradeLevel !== null && gradeLevel !== "Not Specified") payload.grade_level = gradeLevel;
-                 // youtubeUrl is no longer used
-                 if (pastedText !== null) payload.pasted_text = pastedText; // Send raw pasted text
-                 if (exampleQuestion !== null) payload.example_question = exampleQuestion; // Send raw example q
-
-                 // Handle different number keys based on mode
-                 if (numQuestions !== null && ['mcq', 'shortAnswer', 'pastedText', 'similarQ'].includes(selectedMode)) {
-                     payload.num_questions = numQuestions;
-                 }
-                 if (numSentences !== null && selectedMode === 'gapFill') {
-                     payload.num_sentences = numSentences;
-                 }
-                 if (numStatements !== null && selectedMode === 'trueFalse') {
-                     payload.num_statements = numStatements;
-                 }
-
-                 // --- Make API Call ---
                  try {
                     console.log(`Fetching ${fetchUrl} with final payload:`, payload);
                     const response = await fetch(fetchUrl, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
@@ -670,41 +845,59 @@
                     if (!response.ok) { throw new Error(data.message || `HTTP error! status: ${response.status}`); }
 
                     if (data.status === 'success') {
-                        let rawContent = ''; let outputHtml = '';
-                        // --- Response Handling (Select correct parser based on mode/key) ---
-                        if (selectedMode === 'gapFill' && data.worksheet_content) { rawContent = data.worksheet_content; outputHtml = parseAndStructureGapFill(rawContent); }
-                        else if (selectedMode === 'pastedText' && data.pasted_comprehension_content) { rawContent = data.pasted_comprehension_content; outputHtml = parseAndStructurePastedComprehension(rawContent); }
-                        else if (selectedMode === 'mcq' && data.mcq_content) { rawContent = data.mcq_content; outputHtml = parseAndStructureMCQ(rawContent); }
-                        else if (selectedMode === 'trueFalse' && data.true_false_content) { rawContent = data.true_false_content; outputHtml = parseAndStructureTrueFalse(rawContent); }
-                        else if (selectedMode === 'shortAnswer' && data.short_answer_content) { rawContent = data.short_answer_content; outputHtml = parseAndStructureShortAnswer(rawContent); }
-                        else if (selectedMode === 'similarQ' && data.similar_questions_content) { rawContent = data.similar_questions_content; outputHtml = parseAndStructureSimilarQuestions(rawContent); } // Added similarQ
-                        else if (selectedMode === 'textBlock' && data.text_block_content) { rawContent = data.text_block_content; outputHtml = parseAndStructureTextBlock(rawContent); tbDirectInput.value = rawContent; }
-                        else { console.error("Success status but missing expected content key.", data); throw new Error('Generation succeeded but expected content key was not found.'); }
+                        // --- Check if this was the Word List request ---
+                        if (isWordListRequest && data.word_list_text) {
+                             console.log("Received word list text.");
+                             itemPreviewArea.innerHTML = '<p><i>Edit word list below and generate grid...</i></p>'; // Clear preview
+                             displayWordListEditor(data.word_list_text); // Call new function to update UI
+                             generateButton.disabled = true; // Keep main button disabled until grid generated or mode changed
+                             // Do NOT enable save/edit/add buttons here
+                             toggleEditButton.disabled = true; saveButton.disabled = true; addToSheetButton.disabled = true;
+                        }
+                        // --- Handle standard item generation ---
+                        else {
+                            let rawContent = ''; let outputHtml = '';
+                            // Select parser based on mode/key (keep existing logic)
+                            if (selectedMode === 'gapFill' && data.worksheet_content) { rawContent = data.worksheet_content; outputHtml = parseAndStructureGapFill(rawContent); }
+                            else if (selectedMode === 'pastedText' && data.pasted_comprehension_content) { rawContent = data.pasted_comprehension_content; outputHtml = parseAndStructurePastedComprehension(rawContent); }
+                            else if (selectedMode === 'mcq' && data.mcq_content) { rawContent = data.mcq_content; outputHtml = parseAndStructureMCQ(rawContent); }
+                            else if (selectedMode === 'trueFalse' && data.true_false_content) { rawContent = data.true_false_content; outputHtml = parseAndStructureTrueFalse(rawContent); }
+                            else if (selectedMode === 'shortAnswer' && data.short_answer_content) { rawContent = data.short_answer_content; outputHtml = parseAndStructureShortAnswer(rawContent); }
+                            else if (selectedMode === 'similarQ' && data.similar_questions_content) { rawContent = data.similar_questions_content; outputHtml = parseAndStructureSimilarQuestions(rawContent); }
+                            else if (selectedMode === 'textBlock' && data.text_block_content) { rawContent = data.text_block_content; outputHtml = parseAndStructureTextBlock(rawContent); tbDirectInput.value = rawContent; }
+                            else { console.error("Success status but missing expected content key.", data); throw new Error('Generation succeeded but expected content key was not found.'); }
 
-                        itemPreviewArea.innerHTML = outputHtml; // Display result
-                        // Enable appropriate buttons on success
-                        toggleEditButton.disabled = false;
-                        saveButton.disabled = false;
-                        addToSheetButton.disabled = false;
-                        isEditingEnabled = false;
-                        toggleEditButton.textContent = 'Enable Editing';
-                        saveButton.textContent = 'Save to Library';
-
-                    } else { console.error("Backend returned status !== 'success'", data); throw new Error(data.message || 'Generation failed on the server.'); }
-                 } catch (error) {
+                            itemPreviewArea.innerHTML = outputHtml; // Display result
+                            // Enable buttons for standard generated items
+                            toggleEditButton.disabled = false;
+                            saveButton.disabled = false;
+                            addToSheetButton.disabled = false;
+                            isEditingEnabled = false;
+                            toggleEditButton.textContent = 'Enable Editing';
+                            saveButton.textContent = 'Save to Library';
+                            // Re-enable main button AFTER standard generation is complete
+                            generateButton.disabled = false;
+                            generateButton.textContent = 'Generate New'; // Reset button text
+                        }
+                    } else { // data.status !== 'success'
+                        console.error("Backend returned status !== 'success'", data);
+                        throw new Error(data.message || 'Generation failed on the server.');
+                    }
+                 } catch (error) { // Catch fetch or processing errors
                     console.error('Error during generation fetch/processing:', error);
-                    itemPreviewArea.innerHTML = `<p style="color: red;">Error: ${error.message}. Check console for details.</p>`;
-                    // Keep Edit/Save/Add disabled on error
+                    itemPreviewArea.innerHTML = `<p style="color: red;">Error: ${error.message}. Check console.</p>`;
+                    generateButton.disabled = false; // Re-enable button on error
+                    generateButton.textContent = (selectedMode === 'wordSearch') ? 'Get Word List' : 'Generate New'; // Reset text appropriately
+                    // Keep other buttons disabled
                     toggleEditButton.disabled = true; saveButton.disabled = true; addToSheetButton.disabled = true;
-                 } finally {
-                    generateButton.disabled = false; // Always re-enable Generate button
                  }
-            } else { // This block handles: isValid=true AND useDirectText=false AND fetchUrl='' (Shouldn't happen ideally)
-                console.error("LOGIC ERROR: Validation passed, not using direct text, but no fetch URL was set for mode:", selectedMode);
-                itemPreviewArea.innerHTML = `<p style="color: red;">Internal error: Could not determine action for mode '${selectedMode}'.</p>`;
-                generateButton.disabled = false; // Re-enable button
+            } else { // Should not happen if validation is correct
+                console.error("LOGIC ERROR: No fetch URL set for mode:", selectedMode);
+                itemPreviewArea.innerHTML = `<p style="color: red;">Internal JS error for mode '${selectedMode}'.</p>`;
+                generateButton.disabled = false;
             }
-        }); // End of generateButton listener 
+        });
+// End of generateButton listener 
         
 
         toggleEditButton.addEventListener('click', () => { /* ... Keep unchanged ... */
@@ -733,10 +926,10 @@
                 if (!source_topic) { alert("Cannot save without topic context."); isValidMeta = false; }
             } else if (selectedMode === 'textBlock') {
                  source_topic = tbTopicInput.value.trim() || "User Provided Text"; // Use topic if available
-                 grade_level = tbGradeLevelSelect.value;
+                 gradeLevel = tbGradeLevelSelect.value;
             } else if (selectedMode === 'pastedText') {
                  source_topic = "Pasted Text Comprehension"; // Placeholder topic
-                 grade_level = "mixed"; // Placeholder grade
+                 gradeLevel = "middle school"; // Placeholder grade
                  source_url = null;
             } else if (selectedMode === 'mcq') {
                 source_topic = mcqTopicInput.value.trim();
@@ -755,20 +948,41 @@
                  source_topic = sqExampleInput.value.substring(0, 50).trim() + "... (Similar Q)";
                  gradeLevel = sqGradeLevelSelect.value;
                  if (!sqExampleInput.value.trim()) { alert("Cannot save similar question without original example text."); isValidMeta = false; }
-            } else {
+            } else if (selectedMode === 'wordSearch') {
+                 // Get topic/grade from the specific word search inputs used to generate the list
+                 source_topic = document.getElementById('wsTopicInput').value.trim() || "Word Search"; // Use specific ID, provide default topic
+                 gradeLevel = document.getElementById('wsGradeLevelSelect').value; // Use specific ID
+                 if (!source_topic) { /* Optional: add validation if topic was required */ }
+            } else if (selectedMode === 'wordSearch') {
+                 // Get topic/grade from the specific word search inputs used to generate the list
+                 source_topic = document.getElementById('wsTopicInput').value.trim() || "Word Search"; // Use specific ID, provide default topic
+                 gradeLevel = document.getElementById('wsGradeLevelSelect').value; // Use specific ID
+                 if (!source_topic) { /* Optional: add validation if topic was required */ } else {
                 alert("Unknown item type selected for saving.");
                 isValidMeta = false;
             }
+        }
+             else { // Handles any unknown mode
+                alert(`Unknown item type selected for saving: ${selectedMode}`);
+                isValidMeta = false;
+            }
+            if (!gradeLevel) {
+                 alert("Could not determine Grade Level for saving. Please select a grade.");
+                 // Maybe try reading from a default select if others fail?
+                 // gradeLevel = gradeLevelSelect.value; // Fallback? Risky.
+                 isValidMeta = false;
+            }
 
-            // Exit if basic metadata validation failed
             if (!isValidMeta) { return; }
 
-            // Get Content HTML and validate it
             const content_html = itemPreviewArea.innerHTML;
             if (!content_html || content_html.includes('click Generate') || content_html.includes('<div class="loading">')) {
                 alert("Cannot save empty or placeholder content.");
                 return;
             }
+            // Exit if basic metadata validation failed
+            if (!isValidMeta) { return; }
+
 
             // Prepare payload
             const payload = {

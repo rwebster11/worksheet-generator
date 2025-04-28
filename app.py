@@ -1,19 +1,23 @@
 import os
-import anthropic
-# Near other imports
-from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime, timezone # Added timezone for UTC awareness
-from flask import Flask, request, jsonify, send_from_directory
-from dotenv import load_dotenv
+import io
+import re # For parsing YouTube URL
+import random # Needed for word search logic
+from copy import deepcopy # Needed for word search logic
 import traceback # Import traceback for detailed error logging
 import logging # Import standard logging
-import httpx
-import io
-from flask import send_file
-import docx
+from datetime import datetime, timezone # Added timezone for UTC awareness
+from PIL import Image, ImageDraw, ImageFont
+import math
+# Third-party imports
+import anthropic
+import httpx # Still needed by Anthropic client internally, even without proxy
+from dotenv import load_dotenv
+from flask import Flask, request, jsonify, send_from_directory, send_file
+from flask_sqlalchemy import SQLAlchemy
 from bs4 import BeautifulSoup
+import docx
 from docx.shared import Inches, Pt
-
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound # Keep for now
 
 # Configure basic logging early
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(name)s:%(message)s')
@@ -23,46 +27,33 @@ logging.info("Attempting to load .env file...")
 dotenv_path = os.path.join(os.path.dirname(__file__), '.env') # Explicit path
 found_dotenv = load_dotenv(dotenv_path=dotenv_path, verbose=True) # Be verbose
 logging.info(f".env file found and loaded: {found_dotenv}")
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
-import re # For parsing YouTube URL
-# Load environment variables from .env file
-load_dotenv()
+# Removed duplicate load_dotenv()
 
 # Initialize the Flask application
-
 app = Flask(__name__)
 
 # --- Database Configuration ---
-# Get the absolute path of the directory where app.py is located
 basedir = os.path.abspath(os.path.dirname(__file__))
-# Define the path for the SQLite database file
 db_path = os.path.join(basedir, 'worksheet_library.db')
-# Configure the database URI
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
-# Disable modification tracking, it's not needed and uses extra memory
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # --- End Database Configuration ---
 
 # Initialize the SQLAlchemy extension
 db = SQLAlchemy(app)
-# --- Database Model Definition ---
 
+# --- Database Model Definitions ---
 
-# --- New Database Models for Worksheets ---
-
-    # Association Table: Links Worksheets and GeneratedItems, storing order
-    
+# Association Table: Links Worksheets and GeneratedItems, storing order
 worksheet_items_association = db.Table('worksheet_items_association',
     db.Column('worksheet_id', db.Integer, db.ForeignKey('worksheets.id'), primary_key=True),
-    # Check if your actual DB column is 'generated_item_id' or 'generated_item_id'
-    db.Column('generated_item_id', db.Integer, db.ForeignKey('generated_items.id'), primary_key=True),
+    db.Column('generated_item_id', db.Integer, db.ForeignKey('generated_items.id'), primary_key=True), # Matches your column name
     db.Column('item_order', db.Integer, nullable=False)
 )
 
-# 2. Define GeneratedItem class SECOND
+# GeneratedItem Model
 class GeneratedItem(db.Model):
     __tablename__ = 'generated_items'
-
     id = db.Column(db.Integer, primary_key=True)
     item_type = db.Column(db.String(50), nullable=False)
     source_topic = db.Column(db.String(250), nullable=True)
@@ -72,11 +63,9 @@ class GeneratedItem(db.Model):
     creation_date = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     last_modified_date = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
-    # Relationship to Worksheet using back_populates
-    # Use the STRING NAME 'worksheet_items_association' for secondary argument
     worksheets = db.relationship(
         'Worksheet',
-        secondary='worksheet_items_association', # <<< Use STRING NAME
+        secondary='worksheet_items_association',
         back_populates='items',
         lazy='selectin'
     )
@@ -84,23 +73,17 @@ class GeneratedItem(db.Model):
     def __repr__(self):
         return f'<GeneratedItem id={self.id} type={self.item_type}>'
 
-
-# 3. Define Worksheet class THIRD
+# Worksheet Model
 class Worksheet(db.Model):
     __tablename__ = 'worksheets'
-
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(250), nullable=False, default="Untitled Worksheet")
     creation_date = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     last_modified_date = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
-    # Relationship to GeneratedItems via the association table
-    # Use the STRING NAME 'worksheet_items_association' for secondary argument
-    # order_by still correctly references the COLUMN on the TABLE OBJECT
     items = db.relationship(
         'GeneratedItem',
-        secondary='worksheet_items_association', # <<< Use STRING NAME
-        # order_by MUST still use the table object defined globally
+        secondary='worksheet_items_association',
         order_by=worksheet_items_association.c.item_order,
         back_populates='worksheets',
         lazy='selectin'
@@ -109,56 +92,35 @@ class Worksheet(db.Model):
     def __repr__(self):
         return f'<Worksheet id={self.id} title="{self.title}">'
 
-    # --- End of New Models ---
-# --- End Database Model Definition ---
+# Configure mappers after models are defined
 db.configure_mappers()
-# Initialize the Anthropic Client (More robust initialization)
+
+# --- Anthropic Client Initialization ---
 client = None
 try:
     logging.info("Attempting to initialize Anthropic client...")
     api_key_from_env = os.getenv("ANTHROPIC_API_KEY")
-
     if not api_key_from_env:
         logging.error("CRITICAL: ANTHROPIC_API_KEY not found in environment variables.")
     else:
-        logging.info("ANTHROPIC_API_KEY found. Configuring client...")
-
-        # --- CORRECTED PROXY CONFIG for httpx Client ---
-        proxy_url = "http://proxy.server:3128"
-        # Mount the proxy for all https and http requests
-        mounts = {
-            "http://": httpx.HTTPTransport(proxy=proxy_url),
-            "https://": httpx.HTTPTransport(proxy=proxy_url)
-        }
-        # Create the httpx client with the mounted proxy transports
-        http_client = httpx.Client(mounts=mounts)
-        # --- END OF CORRECTED PROXY CONFIG ---
-
-
-        # Pass the configured httpx client to the Anthropic client
-        client = anthropic.Anthropic(
-            api_key=api_key_from_env
-        )
-        logging.info("Anthropic client object CREATED successfully (using default http_client).")
-
+        logging.info("ANTHROPIC_API_KEY found. Initializing client...")
+        # Initialize without unused proxy setup
+        client = anthropic.Anthropic(api_key=api_key_from_env)
+        logging.info("Anthropic client object CREATED successfully.")
 except Exception as e:
     logging.error(f"CRITICAL: Exception during Anthropic client initialization: {e}", exc_info=True)
     client = None
 
-# Check client status immediately after initialization block
 if client is None:
-    logging.warning("Anthropic client is None immediately after initialization block.")
+    logging.warning("Anthropic client is None after initialization attempt.")
 else:
-    logging.info("Anthropic client appears to be initialized successfully after try/except block.")
+    logging.info("Anthropic client appears to be initialized.")
 
-
-# Use Opus model as decided previously
 ANTHROPIC_MODEL_NAME = "claude-3-opus-20240229"
 
-# --- Prompt Function ---
+# --- Prompt Creation Functions ---
 def create_mcq_prompt(topic, grade_level, num_questions=5):
-    """Creates the prompt for Claude to generate multiple-choice questions."""
-    # This prompt needs to be very specific about the output format
+    # ... (keep function as is) ...
     prompt = f"""You are an expert curriculum developer creating assessment questions.
 Generate {num_questions} multiple-choice questions (MCQs) about the topic '{topic}'.
 The target audience is {grade_level} students.
@@ -180,11 +142,30 @@ Audience: {grade_level}
 MCQs:
 """
     return prompt
-def create_text_block_prompt(topic, grade_level, focus=None):
-    """Creates the prompt for Claude to generate a block of text."""
-    # Instructions can be added based on 'focus' or other parameters later
-    focus_instruction = f"Focus on: {focus}" if focus else "Provide a general overview."
 
+def create_word_list_prompt(topic, grade_level, num_words=15):
+    # ... (keep function as is) ...
+    prompt = f"""You are a helpful vocabulary assistant.
+Generate a list of exactly {num_words} single keywords or very short (2-word max) key phrases relevant to the topic '{topic}' for a {grade_level} audience.
+
+**Instructions:**
+1.  Focus on specific nouns, verbs, or essential terms related to '{topic}'.
+2.  Ensure words are appropriate for the {grade_level}.
+3.  Provide *only* the list of words/phrases.
+4.  Format the output as a numbered list (e.g., "1. Photosynthesis", "2. Chlorophyll", "3. Carbon Dioxide").
+5.  Do not include definitions, explanations, or any text other than the numbered list.
+
+Topic: {topic}
+Audience: {grade_level}
+Number of Words: {num_words}
+
+Keyword List:
+"""
+    return prompt
+
+def create_text_block_prompt(topic, grade_level, focus=None):
+    # ... (keep function as is) ...
+    focus_instruction = f"Focus on: {focus}" if focus else "Provide a general overview."
     prompt = f"""You are a helpful assistant generating informational content.
 Write a clear and concise text block about the topic '{topic}'.
 The target audience is {grade_level} students.
@@ -200,8 +181,9 @@ Audience: {grade_level}
 Text Block:
 """
     return prompt
+
 def create_true_false_prompt(topic, grade_level, num_statements=8):
-    """Creates the prompt for Claude to generate True/False statements."""
+    # ... (keep function as is) ...
     prompt = f"""You are an expert educator creating assessment materials.
 Generate {num_statements} True/False statements about the core concepts of the topic '{topic}'.
 The target audience is {grade_level} students.
@@ -219,8 +201,9 @@ Audience: {grade_level}
 True/False Statements:
 """
     return prompt
-def create_gap_fill_prompt(topic, grade_level="middle school", num_sentences=7): # Added num_sentences arg with default
-    """Creates the prompt for the Anthropic API to generate a gap-fill worksheet."""
+
+def create_gap_fill_prompt(topic, grade_level="middle school", num_sentences=7):
+    # ... (keep function as is) ...
     prompt = f"""You are an expert teacher creating educational resources.
 Generate a gap-fill (cloze) activity about the topic '{topic}'.
 The target audience is {grade_level} students.
@@ -240,24 +223,21 @@ Worksheet:
 """
     return prompt
 
-def extract_video_id(url):
-    """Extracts the YouTube video ID from various URL formats."""
-    # Regex patterns to match standard YouTube URLs and short URLs
+def extract_video_id(url): # Keep for now
+    # ... (keep function as is) ...
     patterns = [
-        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})',  # Standard URL
-        r'(?:https?:\/\/)?(?:www\.)?youtu\.be\/([a-zA-Z0-9_-]{11})',          # Short URL
-        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})', # Embed URL
-        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/v\/([a-zA-Z0-9_-]{11})',     # V URL
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtu\.be\/([a-zA-Z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/v\/([a-zA-Z0-9_-]{11})',
     ]
     for pattern in patterns:
         match = re.search(pattern, url)
-        if match:
-            return match.group(1) # Return the first capture group (the ID)
-    return None # Return None if no match found
+        if match: return match.group(1)
+    return None
 
-def create_comprehension_prompt(transcript_text, num_questions=5):
-    """Creates the prompt for Claude to generate comprehension questions from a transcript."""
-    # Use the num_questions variable in the prompt f-string
+def create_comprehension_prompt(transcript_text, num_questions=5): # Keep for now
+    # ... (keep function as is) ...
     prompt = f"""You are an expert educator. Based on the following video transcript, please generate {num_questions} insightful comprehension questions that test understanding of the key information presented.
 
 **Instructions for Questions:**
@@ -278,13 +258,10 @@ def create_comprehension_prompt(transcript_text, num_questions=5):
     return prompt
 
 def create_pasted_comprehension_prompt(pasted_text, num_questions=5):
-    """Creates the prompt for Claude to generate comprehension questions and key from pasted text."""
-    # Basic check for text length to avoid sending huge payloads if needed later
-    max_chars = 15000 # Limit context sent to AI (adjust as needed)
+    # ... (keep function as is) ...
+    max_chars = 15000
     truncated_text = pasted_text[:max_chars]
-    if len(pasted_text) > max_chars:
-        print(f"Warning: Pasted text truncated to {max_chars} chars for AI prompt.")
-
+    if len(pasted_text) > max_chars: print(f"Warning: Pasted text truncated to {max_chars} chars for AI prompt.")
     prompt = f"""You are an expert educator designing reading comprehension assessments.
 Based *only* on the following provided text passage, generate {num_questions} insightful comprehension questions that test understanding of the key information presented within that text.
 Also provide a brief answer key outlining the expected points or a model answer for each question based *only* on the provided text.
@@ -310,9 +287,8 @@ Answer Key:
 """
     return prompt
 
-# ---  create_short_answer_prompt function ---
 def create_short_answer_prompt(topic, grade_level, num_questions=5):
-    """Creates the prompt for Claude to generate short answer questions AND answer key points."""
+    # ... (keep function as is) ...
     prompt = f"""You are an expert educator designing formative assessments.
 Generate {num_questions} open-ended short answer questions about the key aspects of the topic '{topic}'.
 Also provide a brief answer key outlining the expected points or a model answer for each question.
@@ -339,12 +315,9 @@ Answer Key:
 [Generate Answer Key Here Following Format]
 """
     return prompt
-def create_similar_questions_prompt(example_question, num_questions=3, grade_level="Not Specified"): # Add other args if needed (e.g., variation flags)
-    """Creates the prompt for Claude to generate similar questions based on an example."""
 
-    # Ensure the example question is treated as potentially multi-line text
-    # Escape any characters in example_question that might interfere with f-string formatting if needed, though usually not necessary for plain text.
-
+def create_similar_questions_prompt(example_question, num_questions=3, grade_level="Not Specified"):
+    # ... (keep function as is) ...
     prompt = f"""
 You are an expert question designer replicating educational assessment items. Your task is to analyze the provided example question, identify the core concept and calculation type being tested, and then generate {num_questions} NEW questions that assess the SAME core concept at a SIMILAR difficulty level suitable for {grade_level} students.
 
@@ -389,1215 +362,688 @@ Answer Key:
 [AI generates answer key for the NEW questions here]
 """
     return prompt
-# --- Route to List Saved Items ---
+
+# --- Word Search Generation Logic (Adapted from make_wordsearch.py) ---
+
+# Constants
+NMAX_GRID = 32
+ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+# --- Masking Functions ---
+def circle_mask(grid, nrows, ncols):
+    r2 = min(ncols, nrows)**2 // 4
+    cx, cy = ncols//2, nrows // 2
+    for irow in range(nrows):
+        for icol in range(ncols):
+            if (irow - cy)**2 + (icol - cx)**2 > r2:
+                grid[irow][icol] = '*'
+def squares_mask(grid, nrows, ncols):
+    a = int(0.38 * min(ncols, nrows))
+    cy = nrows // 2; cx = ncols // 2
+    for irow in range(nrows):
+        for icol in range(ncols):
+            if a <= icol < ncols-a:
+                if irow < cy-a or irow > cy+a: grid[irow][icol] = '*'
+            if a <= irow < nrows-a:
+                if icol < cx-a or icol > cx+a: grid[irow][icol] = '*'
+def no_mask(grid, nrows, ncols): pass
+apply_mask = {None: no_mask, 'circle': circle_mask, 'squares': squares_mask}
+
+# --- Grid Creation and Filling ---
+def make_initial_grid(nrows, ncols, mask_name=None):
+    if mask_name not in apply_mask:
+        logging.warning(f"Unknown mask name '{mask_name}'. Using no mask.")
+        mask_name = None
+    grid = [[' ']*ncols for _ in range(nrows)]
+    apply_mask[mask_name](grid, nrows, ncols)
+    return grid
+
+def fill_grid_randomly(grid, nrows, ncols):
+    for irow in range(nrows):
+        for icol in range(ncols):
+            if grid[irow][icol] == ' ': grid[irow][icol] = random.choice(ALPHABET)
+
+def remove_mask_chars(grid, nrows, ncols):
+    for irow in range(nrows):
+        for icol in range(ncols):
+            if grid[irow][icol] == '*': grid[irow][icol] = ' '
+
+# --- Word Placement Logic ---
+def _try_place_words(nrows, ncols, wordlist, allow_backwards_words=True, mask_name=None):
+    grid = make_initial_grid(nrows, ncols, mask_name)
+
+    def test_candidate(grid, irow, icol, dx, dy, word):
+        word_len = len(word)
+        for j in range(word_len):
+            test_row, test_col = irow + j*dy, icol + j*dx
+            if not (0 <= test_row < nrows and 0 <= test_col < ncols): return False
+            if grid[test_row][test_col] not in (' ', word[j]): return False
+        return True
+
+    def place_word_in_grid(grid, word):
+        word = ''.join(filter(str.isalnum, word)).upper()
+        if not word: return None
+        dxdy_choices = [(0,1), (1,0), (1,1), (1,-1)]; random.shuffle(dxdy_choices)
+
+        for (dx, dy) in dxdy_choices:
+            word_to_place = word
+            if allow_backwards_words and random.choice([True, False]): word_to_place = word[::-1]
+
+            n = len(word_to_place)
+            colmin = 0; colmax = ncols - n if dx != 0 else ncols - 1
+            rowmin = 0 if dy >= 0 else n - 1; rowmax = nrows - n if dy > 0 else nrows - 1
+            if dy < 0: rowmax = nrows -1 # Correct range for up-diagonals
+
+            if colmax < colmin or rowmax < rowmin: continue
+
+            candidates = []
+            for r in range(rowmin, rowmax + 1):
+                 for c in range(colmin, colmax + 1):
+                      end_r, end_c = r + (n-1)*dy, c + (n-1)*dx
+                      if 0 <= end_r < nrows and 0 <= end_c < ncols:
+                           if test_candidate(grid, r, c, dx, dy, word_to_place): candidates.append((r, c))
+
+            if not candidates: continue
+            start_row, start_col = random.choice(candidates)
+            current_row, current_col = start_row, start_col
+            for char in word_to_place:
+                grid[current_row][current_col] = char
+                current_row += dy; current_col += dx
+            logging.debug(f"Placed '{word}' at ({start_row},{start_col}) orientation ({dx},{dy})")
+            return True # Indicate success
+
+        logging.warning(f"Failed to place word: {word}")
+        return False
+
+    successfully_placed_words = []
+    sorted_wordlist = sorted([w for w in wordlist if w], key=len, reverse=True)
+    for word in sorted_wordlist:
+        if place_word_in_grid(grid, word): successfully_placed_words.append(word.upper())
+        else: return None, None
+
+    solution_grid = deepcopy(grid); fill_grid_randomly(grid, nrows, ncols)
+    remove_mask_chars(grid, nrows, ncols); remove_mask_chars(solution_grid, nrows, ncols)
+    return grid, sorted(successfully_placed_words)
+
+# --- Top-Level Generation Function ---
+class PuzzleGenerationError(Exception): pass
+
+def generate_wordsearch_grid(wordlist, nrows, ncols, allow_backwards_words=True, mask_name=None, attempts=10):
+    if nrows > NMAX_GRID or ncols > NMAX_GRID: raise ValueError(f'Max grid dimension is {NMAX_GRID}')
+    if not wordlist: raise ValueError("Word list cannot be empty.")
+
+    max_dimension = max(nrows, ncols); cleaned_wordlist = []
+    for word in wordlist:
+         cleaned_word = ''.join(filter(str.isalnum, word)).upper()
+         if cleaned_word:
+              if len(cleaned_word) > max_dimension: raise ValueError(f"Word '{cleaned_word}' > {max_dimension} chars (grid {nrows}x{ncols})")
+              cleaned_wordlist.append(cleaned_word)
+    if not cleaned_wordlist: raise ValueError("No valid words after cleaning.")
+
+    for i in range(attempts):
+        logging.info(f"Word search generation attempt {i+1}/{attempts}...")
+        grid, placed_words = _try_place_words(nrows, ncols, cleaned_wordlist, allow_backwards_words, mask_name)
+        if grid is not None:
+            logging.info(f"Successfully generated grid in {i+1} attempt(s). Placed {len(placed_words)} words.")
+            return grid, placed_words
+    raise PuzzleGenerationError(f"Failed to place all words after {attempts} attempts.")
+# --- End of Word Search Generation Logic ---
+def create_wordsearch_image(grid_list, cell_size=30, font_size=18, font_path=None):
+    """Creates a PIL Image object of the word search grid."""
+    if not grid_list or not grid_list[0]:
+        return None # Cannot generate image from empty grid
+
+    nrows = len(grid_list)
+    ncols = len(grid_list[0])
+    img_width = ncols * cell_size
+    img_height = nrows * cell_size
+
+    # Create white background image
+    image = Image.new('RGB', (img_width, img_height), 'white')
+    draw = ImageDraw.Draw(image)
+
+    # Try to load a font (adjust path if needed, or handle fallback)
+    try:
+        # On Linux servers, common paths might be different.
+        # A basic sans-serif font might be more reliable if Century Gothic isn't installed server-side.
+        # Example paths (check your system):
+        # font_path_try = font_path or "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf" # Common on Linux
+        font_path_try = font_path or "arial.ttf" # Common on Windows, might work locally
+        font = ImageFont.truetype(font_path_try, font_size)
+    except IOError:
+        logging.warning(f"Font file not found at {font_path_try}. Using default PIL font.")
+        font = ImageFont.load_default() # Fallback font
+
+    # Draw letters and grid lines
+    for r in range(nrows):
+        for c in range(ncols):
+            char = grid_list[r][c]
+            x0 = c * cell_size
+            y0 = r * cell_size
+            x1 = x0 + cell_size
+            y1 = y0 + cell_size
+
+            # Draw cell borders
+            draw.rectangle([x0, y0, x1, y1], outline='grey')
+
+            # Draw letter centered in cell
+            # text_width, text_height = draw.textsize(char, font=font) # Deprecated
+            bbox = draw.textbbox((0,0), char, font=font) # x0, y0, x1, y1
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            text_x = x0 + (cell_size - text_width) / 2 - bbox[0] # Adjust for bbox offset
+            text_y = y0 + (cell_size - text_height) / 2 - bbox[1] # Adjust for bbox offset
+            draw.text((text_x, text_y), char, fill='black', font=font)
+
+    return image
+# --- Standard API Routes ---
+# (Generic Error Handlers - Can be refactored later)
+def handle_anthropic_error(e):
+    if isinstance(e, anthropic.APIConnectionError): code=503; msg=f'AI Connection Error: {e}'
+    elif isinstance(e, anthropic.RateLimitError): code=429; msg='AI Rate Limit Exceeded.'
+    elif isinstance(e, anthropic.AuthenticationError): code=401; msg=f'AI Authentication Error: {e}'
+    elif isinstance(e, anthropic.APIStatusError):
+        code = e.status_code; msg = f'AI service error (Status {code})'
+        try: error_details = e.response.json(); msg += f": {error_details.get('error', {}).get('message', e.response.text)}"
+        except Exception: msg += f": {e.response.text}"
+    else: code=500; msg='An unexpected error occurred during AI call.'
+    logging.error(f"{msg} - Exception: {e}", exc_info=(code == 500)) # Log traceback for unexpected
+    return jsonify({'status': 'error', 'message': msg}), code
+
+# --- List Saved Items Route ---
 @app.route('/list_items', methods=['GET'])
 def list_items_route():
-    """Handles GET requests to retrieve saved items from the database."""
-    print("Received request at /list_items")
+    logging.info("Received request at /list_items")
     try:
-        # Query the database - get most recent 20 items for now
-        # Order by last modified date descending
         items = GeneratedItem.query.order_by(GeneratedItem.last_modified_date.desc()).limit(20).all()
-
-        # Convert items to a list of dictionaries for JSON serialization
-        items_list = []
-        for item in items:
-            items_list.append({
-                'id': item.id,
-                'item_type': item.item_type,
-                'source_topic': item.source_topic,
-                'source_url': item.source_url,
-                'grade_level': item.grade_level,
-                # Optionally include creation/modified date (convert to string)
-                'last_modified': item.last_modified_date.isoformat(),
-                # Avoid sending full content_html in the list view for brevity
-                # 'content_preview': item.content_html[:100] + '...' # Example preview
-            })
-
+        items_list = [{'id': item.id, 'item_type': item.item_type, 'source_topic': item.source_topic,
+                       'source_url': item.source_url, 'grade_level': item.grade_level,
+                       'last_modified': item.last_modified_date.isoformat()} for item in items]
         return jsonify({'status': 'success', 'items': items_list})
-
     except Exception as e:
-        print(f"Error retrieving items from database: {e}")
-        print(traceback.format_exc())
-        # Avoid sending detailed DB errors to frontend in production
+        logging.error(f"Error retrieving items from database: {e}", exc_info=True)
         return jsonify({'status': 'error', 'message': 'Error retrieving items from library.'}), 500
 
-# --- End of List Items Route ---
-# --- Route for True/False Statement Generation ---
+# --- Generate Routes ---
 @app.route('/generate_true_false', methods=['POST'])
 def generate_true_false_route():
-    """Handles POST requests to generate True/False statements."""
-    print("Received request at /generate_true_false")
-
-    if client is None: # Check Anthropic client
-        return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
-    if not request.is_json: # Check request format
-         return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
-
+    logging.info("Received request at /generate_true_false")
+    if client is None: return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
+    if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
     try:
-        data = request.get_json()
-        topic = data.get('topic')
-        grade_level = data.get('grade_level', 'middle school')
-        num_statements_req = data.get('num_statements', 8) # Default to 8 statements
-
-        # --- Validation ---
-        if not topic:
-            return jsonify({'status': 'error', 'message': 'Missing "topic" in request data'}), 400
-        try:
-            num_statements = int(num_statements_req)
-            if not 3 <= num_statements <= 20: # Sensible range for T/F
-                raise ValueError("Number of statements must be between 3 and 20.")
-        except (ValueError, TypeError):
-             return jsonify({'status': 'error', 'message': 'Invalid number of statements specified (must be an integer between 3 and 20).'}), 400
-
-        print(f"Received T/F request: Topic='{topic}', Grade='{grade_level}', NumStatements={num_statements}")
-
-        # --- Create Prompt ---
+        data = request.get_json(); topic = data.get('topic'); grade_level = data.get('grade_level', 'middle school'); num_statements_req = data.get('num_statements', 8)
+        if not topic: return jsonify({'status': 'error', 'message': 'Missing "topic"'}), 400
+        try: num_statements = int(num_statements_req); assert 3 <= num_statements <= 20
+        except (ValueError, TypeError, AssertionError): return jsonify({'status': 'error', 'message': 'Invalid num_statements (must be int 3-20)'}), 400
+        logging.info(f"T/F request: Topic='{topic}', Grade='{grade_level}', NumStatements={num_statements}")
         prompt_content = create_true_false_prompt(topic, grade_level, num_statements)
+        message = client.messages.create(model=ANTHROPIC_MODEL_NAME, max_tokens=1000 + (num_statements * 50), temperature=0.6, messages=[{ "role": "user", "content": prompt_content }])
+        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'): generated_content = message.content[0].text
+        else: raise ValueError("Failed to parse content from AI response.")
+        logging.info(f"Generated T/F content length: {len(generated_content)} chars")
+        return jsonify({'status': 'success', 'true_false_content': generated_content.strip()})
+    except ValueError as ve: logging.warning(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
+    except (anthropic.APIError, httpx.RequestError) as e: return handle_anthropic_error(e)
+    except Exception as e: logging.error(f"Unexpected error in /generate_true_false: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Internal server error.'}), 500
 
-        # --- Call Anthropic API ---
-        print(f"Sending T/F request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
-        message = client.messages.create(
-            model=ANTHROPIC_MODEL_NAME,
-            max_tokens=1000 + (num_statements * 50), # Estimate tokens
-            temperature=0.6, # Maybe slightly less creative for T/F?
-            messages=[{ "role": "user", "content": prompt_content }]
-        )
-        print("Received response from Anthropic API.")
-
-        # --- Extract Result ---
-        generated_content = ""
-        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
-            generated_content = message.content[0].text
-        else:
-             print(f"Warning: Unexpected API response structure or empty content. Response: {message}")
-             return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
-
-        print(f"Generated T/F content length: {len(generated_content)} chars")
-
-        # --- Return Result (use a distinct key) ---
-        return jsonify({
-            'status': 'success',
-            'true_false_content': generated_content.strip() # Use 'true_false_content' key
-        })
-
-    # --- Error Handling (reuse existing handlers) ---
-    except ValueError as ve: # Catch our validation errors
-         print(f"Validation Error: {ve}")
-         return jsonify({'status': 'error', 'message': str(ve)}), 400
-    except anthropic.APIConnectionError as e: # ... Copy other handlers ...
-        print(f"API Connection Error: {e}")
-        return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
-    except anthropic.RateLimitError as e:
-        print(f"API Rate Limit Error: {e}")
-        return jsonify({'status': 'error', 'message': 'Rate limit exceeded. Please try again later.'}), 429
-    except anthropic.APIStatusError as e:
-        print(f"API Status Error: Status Code: {e.status_code}, Response: {e.response}")
-        error_message = f'AI service error (Status {e.status_code})'
-        try: error_details = e.response.json(); error_message += f": {error_details.get('error', {}).get('message', e.response.text)}"
-        except Exception: error_message += f": {e.response.text}"
-        return jsonify({'status': 'error', 'message': error_message}), e.status_code
-    except Exception as e:
-        print(f"An unexpected error occurred in /generate_true_false: {e}")
-        print(traceback.format_exc())
-        return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
-
-# --- End of True/False Route ---
-# --- Route for Multiple Choice Question Generation ---
 @app.route('/generate_mcq', methods=['POST'])
 def generate_mcq_route():
-    """Handles POST requests to generate Multiple Choice Questions."""
-    print("Received request at /generate_mcq")
-
-    if client is None: # Check Anthropic client
-        # ... (keep existing error handling) ...
-        return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
-    if not request.is_json: # Check request format
-        # ... (keep existing error handling) ...
-         return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
-
+    logging.info("Received request at /generate_mcq")
+    if client is None: return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
+    if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
     try:
-        data = request.get_json()
-        topic = data.get('topic')
-        grade_level = data.get('grade_level', 'middle school') # Default grade level
-        num_questions_req = data.get('num_questions', 5) # Default number
-
-        # --- Validation ---
-        if not topic:
-            return jsonify({'status': 'error', 'message': 'Missing "topic" in request data'}), 400
-        try:
-            num_questions = int(num_questions_req)
-            if not 2 <= num_questions <= 15: # Adjust range as needed
-                raise ValueError("Number of questions must be between 2 and 15.")
-        except (ValueError, TypeError):
-             return jsonify({'status': 'error', 'message': 'Invalid number of questions specified (must be an integer between 2 and 15).'}), 400
-
-        print(f"Received MCQ request: Topic='{topic}', Grade='{grade_level}', NumQuestions={num_questions}")
-
-        # --- Create Prompt ---
+        data = request.get_json(); topic = data.get('topic'); grade_level = data.get('grade_level', 'middle school'); num_questions_req = data.get('num_questions', 5)
+        if not topic: return jsonify({'status': 'error', 'message': 'Missing "topic"'}), 400
+        try: num_questions = int(num_questions_req); assert 2 <= num_questions <= 15
+        except (ValueError, TypeError, AssertionError): return jsonify({'status': 'error', 'message': 'Invalid num_questions (must be int 2-15)'}), 400
+        logging.info(f"MCQ request: Topic='{topic}', Grade='{grade_level}', NumQuestions={num_questions}")
         prompt_content = create_mcq_prompt(topic, grade_level, num_questions)
-
-        # --- Call Anthropic API ---
-        print(f"Sending MCQ request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
-        message = client.messages.create(
-            model=ANTHROPIC_MODEL_NAME,
-            max_tokens=1500 + (num_questions * 100), # Generous token estimate for questions + options
-            temperature=0.7, # Adjust as needed
-            messages=[{ "role": "user", "content": prompt_content }]
-        )
-        print("Received response from Anthropic API.")
-
-        # --- Extract Result ---
-        generated_content = ""
-        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
-            generated_content = message.content[0].text
-        else:
-             # ... (keep existing error handling for bad response structure) ...
-             print(f"Warning: Unexpected API response structure or empty content. Response: {message}")
-             return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
-
-        print(f"Generated MCQ content length: {len(generated_content)} chars")
-
-        # --- Return Result (use a distinct key) ---
-        return jsonify({
-            'status': 'success',
-            'mcq_content': generated_content.strip() # Use 'mcq_content' key
-        })
-
-    # --- Error Handling (reuse existing handlers) ---
-    except ValueError as ve: # Catch our validation errors
-         print(f"Validation Error: {ve}")
-         return jsonify({'status': 'error', 'message': str(ve)}), 400
-    # ... include the existing except blocks for anthropic errors and general Exception ...
-    except anthropic.APIConnectionError as e:
-        print(f"API Connection Error: {e}")
-        return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
-    except anthropic.RateLimitError as e:
-        print(f"API Rate Limit Error: {e}")
-        return jsonify({'status': 'error', 'message': 'Rate limit exceeded. Please try again later.'}), 429
-    except anthropic.APIStatusError as e:
-        print(f"API Status Error: Status Code: {e.status_code}, Response: {e.response}")
-        # ... (error message extraction logic from previous routes) ...
-        error_message = f'AI service error (Status {e.status_code})'
-        try:
-            error_details = e.response.json()
-            error_message += f": {error_details.get('error', {}).get('message', e.response.text)}"
-        except Exception:
-            error_message += f": {e.response.text}"
-        return jsonify({'status': 'error', 'message': error_message}), e.status_code
-    except Exception as e:
-        print(f"An unexpected error occurred in /generate_mcq: {e}")
-        print(traceback.format_exc())
-        return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
-
-# --- End of MCQ Route ---
-# --- Route for Text Block Generation ---
+        message = client.messages.create(model=ANTHROPIC_MODEL_NAME, max_tokens=1500 + (num_questions * 100), temperature=0.7, messages=[{ "role": "user", "content": prompt_content }])
+        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'): generated_content = message.content[0].text
+        else: raise ValueError("Failed to parse content from AI response.")
+        logging.info(f"Generated MCQ content length: {len(generated_content)} chars")
+        return jsonify({'status': 'success', 'mcq_content': generated_content.strip()})
+    except ValueError as ve: logging.warning(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
+    except (anthropic.APIError, httpx.RequestError) as e: return handle_anthropic_error(e)
+    except Exception as e: logging.error(f"Unexpected error in /generate_mcq: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Internal server error.'}), 500
 
 @app.route('/generate_text_block', methods=['POST'])
 def generate_text_block_route():
-    print("Received request at /generate_text_block")
-
-    # --- Check if client object exists ---
-    if client is None:
-        print("Error condition met: client object is None before processing request.")
-        # This specific message confirms the init failed earlier
-        return jsonify({'status': 'error', 'message': 'Server setup error: AI client object is None.'}), 500
-    if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
-
-    try:
-        data = request.get_json()
-        topic = data.get('topic')
-        grade_level = data.get('grade_level', 'middle school')
-        focus = data.get('focus')
-
-        if not topic: return jsonify({'status': 'error', 'message': 'Missing "topic" for text generation'}), 400
-        print(f"Received Text Block request: Topic='{topic}', Grade='{grade_level}', Focus='{focus}'")
-
-        # --- Create Prompt ---
-        prompt_content = create_text_block_prompt(topic, grade_level, focus)
-
-        # --- Call Anthropic API ---
-        print("Attempting to call Anthropic API...") # Log before call
-        # *** Add specific Anthropic error catches below ***
-        try:
-            message = client.messages.create(
-                model=ANTHROPIC_MODEL_NAME,
-                max_tokens=800,
-                temperature=0.7,
-                messages=[{ "role": "user", "content": prompt_content }]
-            )
-            print("Received response from Anthropic API successfully.") # Log after successful call
-        except anthropic.AuthenticationError as auth_err:
-             print(f"Anthropic Authentication Error: {auth_err}")
-             # Return a specific error for bad keys
-             return jsonify({'status': 'error', 'message': f'AI Authentication Error: {auth_err}'}), 401 # Unauthorized
-        except anthropic.APIConnectionError as conn_err:
-             print(f"Anthropic Connection Error: {conn_err}")
-             return jsonify({'status': 'error', 'message': f'AI Connection Error: {conn_err}'}), 503 # Service Unavailable
-        except anthropic.RateLimitError as rate_err:
-             print(f"Anthropic Rate Limit Error: {rate_err}")
-             return jsonify({'status': 'error', 'message': 'AI Rate Limit Exceeded.'}), 429
-        except anthropic.APIStatusError as status_err:
-            # --- Start of APIStatusError block ---
-            print(f"Anthropic API Status Error: Status Code: {status_err.status_code}, Response: {status_err.response}")
-            error_message = f'AI service error (Status {status_err.status_code})' # Semicolon removed
-
-            # --- Start of nested try (indented) ---
-            try:
-                error_details = status_err.response.json() # Semicolon removed
-                error_message += f": {error_details.get('error', {}).get('message', status_err.response.text)}" # Semicolon removed
-            # --- Nested except (indented to match nested try) ---
-            except Exception:
-                # --- Line inside nested except (indented further) ---
-                error_message += f": {status_err.response.text}" # Semicolon removed
-            # --- End of nested try...except ---
-
-            # This return belongs to the outer APIStatusError block (indented same as print/error_message assignment)
-            return jsonify({'status': 'error', 'message': error_message}), status_err.status_code
-        # --- End of APIStatusError block ---
-
-        except Exception as api_call_err: # Correctly indented relative to outer 
-             
-             print(f"Unexpected error DURING Anthropic API call: {api_call_err}")
-             print(traceback.format_exc())
-             return jsonify({'status': 'error', 'message': f'Unexpected error during AI call: {api_call_err}'}), 500
-
-        # --- Extract Result (only if API call succeeded) ---
-        generated_content = ""
-        if message and message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
-            generated_content = message.content[0].text
-        else:
-             print(f"Warning: Unexpected API response structure or empty content after successful call. Response: {message}"); return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
-
-        print(f"Generated Text Block length: {len(generated_content)} chars")
-
-        # --- Return Result ---
-        return jsonify({
-            'status': 'success',
-            'text_block_content': generated_content.strip()
-        })
-
-    # --- Catch errors outside the API call itself ---
-    except ValueError as ve: print(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
-    except Exception as e: # General errors in the route logic (e.g., getting JSON data)
-        print(f"An unexpected error occurred in /generate_text_block route logic: {e}"); print(traceback.format_exc()); return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
-    except anthropic.APIConnectionError as e: print(f"API Connection Error: {e}"); return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
-    except anthropic.RateLimitError as e: print(f"API Rate Limit Error: {e}"); return jsonify({'status': 'error', 'message': 'Rate limit exceeded. Please try again later.'}), 429
-    except anthropic.APIStatusError as e:
-            print(f"API Status Error: Status Code: {e.status_code}, Response: {e.response}")
-            error_message = f'AI service error (Status {e.status_code})'
-            # --- Start of nested try ---
-            try:
-                # Try to parse more specific error details from the JSON response body
-                error_details = e.response.json()
-                error_message += f": {error_details.get('error', {}).get('message', e.response.text)}"
-            # --- Nested except - correctly indented ---
-            except Exception:
-                # --- Line inside nested except - correctly indented ---
-                # Fallback to using the raw response text if JSON parsing fails
-                error_message += f": {e.response.text}"
-            # --- End of nested try...except ---
-
-            # This return statement is correctly indented for the APIStatusError block
-            return jsonify({'status': 'error', 'message': error_message}), e.status_code
-
-        # --- This except block starts on a NEW LINE and is indented correctly ---
-    except Exception as e:
-            # --- Lines inside this except block are correctly indented ---
-        print(f"An unexpected error occurred in /generate_text_block: {e}") # Ensure route name is correct
-        print(traceback.format_exc())
-        return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
-# --- End of Text Block Route ---
-# --- Route for Short Answer Question Generation ---
-@app.route('/generate_short_answer', methods=['POST'])
-def generate_short_answer_route():
-    """Handles POST requests to generate Short Answer questions and keys."""
-    print("Received request at /generate_short_answer")
-    # ... (Keep client check, json check) ...
+    logging.info("Received request at /generate_text_block")
     if client is None: return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
     if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
-
     try:
-        data = request.get_json()
-        topic = data.get('topic')
-        grade_level = data.get('grade_level', 'middle school')
-        num_questions_req = data.get('num_questions', 5)
+        data = request.get_json(); topic = data.get('topic'); grade_level = data.get('grade_level', 'middle school'); focus = data.get('focus')
+        if not topic: return jsonify({'status': 'error', 'message': 'Missing "topic"'}), 400
+        logging.info(f"Text Block request: Topic='{topic}', Grade='{grade_level}', Focus='{focus}'")
+        prompt_content = create_text_block_prompt(topic, grade_level, focus)
+        message = client.messages.create(model=ANTHROPIC_MODEL_NAME, max_tokens=800, temperature=0.7, messages=[{ "role": "user", "content": prompt_content }])
+        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'): generated_content = message.content[0].text
+        else: raise ValueError("Failed to parse content from AI response.")
+        logging.info(f"Generated Text Block length: {len(generated_content)} chars")
+        return jsonify({'status': 'success', 'text_block_content': generated_content.strip()})
+    except ValueError as ve: logging.warning(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
+    except (anthropic.APIError, httpx.RequestError) as e: return handle_anthropic_error(e)
+    except Exception as e: logging.error(f"Unexpected error in /generate_text_block: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Internal server error.'}), 500
 
-        # --- Validation (Keep existing validation) ---
-        if not topic: return jsonify({'status': 'error', 'message': 'Missing "topic" in request data'}), 400
-        try:
-            num_questions = int(num_questions_req);
-            if not 2 <= num_questions <= 10: raise ValueError("Number of questions must be between 2 and 10.")
-        except (ValueError, TypeError): return jsonify({'status': 'error', 'message': 'Invalid number of questions specified (must be an integer between 2 and 10).'}), 400
-
-        print(f"Received SA request: Topic='{topic}', Grade='{grade_level}', NumQuestions={num_questions}")
-
-        # --- Create Prompt (Uses the *updated* prompt function) ---
+@app.route('/generate_short_answer', methods=['POST'])
+def generate_short_answer_route():
+    logging.info("Received request at /generate_short_answer")
+    if client is None: return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
+    if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+    try:
+        data = request.get_json(); topic = data.get('topic'); grade_level = data.get('grade_level', 'middle school'); num_questions_req = data.get('num_questions', 5)
+        if not topic: return jsonify({'status': 'error', 'message': 'Missing "topic"'}), 400
+        try: num_questions = int(num_questions_req); assert 2 <= num_questions <= 10
+        except (ValueError, TypeError, AssertionError): return jsonify({'status': 'error', 'message': 'Invalid num_questions (must be int 2-10)'}), 400
+        logging.info(f"SA request: Topic='{topic}', Grade='{grade_level}', NumQuestions={num_questions}")
         prompt_content = create_short_answer_prompt(topic, grade_level, num_questions)
-
-        # --- Call Anthropic API ---
-        print(f"Sending SA request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
-        message = client.messages.create(
-            model=ANTHROPIC_MODEL_NAME,
-            max_tokens=1200 + (num_questions * 100), # Increased slightly for answers
-            temperature=0.7,
-            messages=[{ "role": "user", "content": prompt_content }]
-        )
-        print("Received response from Anthropic API.")
-
-        # --- Extract Result (No change needed here) ---
-        generated_content = ""
-        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
-            generated_content = message.content[0].text
-        else:
-             print(f"Warning: Unexpected API response structure or empty content. Response: {message}"); return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
-
-        print(f"Generated SA content length: {len(generated_content)} chars")
-
-        # --- Return Result (No change needed here) ---
-        return jsonify({
-            'status': 'success',
-            'short_answer_content': generated_content.strip() # Key 'short_answer_content' now includes Qs and Key
-        })
-
-    # --- Error Handling (Keep existing handlers) ---
-    # ... except ValueError ...
-    # ... except anthropic errors ...
-    # ... except Exception ...
-        # --- Error Handling ---
-    except ValueError as ve:
-         print(f"Validation Error: {ve}")
-         return jsonify({'status': 'error', 'message': str(ve)}), 400
-    except anthropic.APIConnectionError as e:
-        print(f"API Connection Error: {e}")
-        return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
-    except anthropic.RateLimitError as e:
-        print(f"API Rate Limit Error: {e}")
-        return jsonify({'status': 'error', 'message': 'Rate limit exceeded. Please try again later.'}), 429
-    # *** CORRECTED BLOCK BELOW ***
-    except anthropic.APIStatusError as e:
-        print(f"API Status Error: Status Code: {e.status_code}, Response: {e.response}")
-        error_message = f'AI service error (Status {e.status_code})'
-        try:
-            error_details = e.response.json()
-            error_message += f": {error_details.get('error', {}).get('message', e.response.text)}"
-        except Exception: # Catch potential JSON decoding errors or different structures
-            error_message += f": {e.response.text}" # Fallback to raw text
-        return jsonify({'status': 'error', 'message': error_message}), e.status_code
-    # *** END OF CORRECTED BLOCK ***
-    except Exception as e:
-        print(f"An unexpected error occurred in /generate_short_answer: {e}")
-        print(traceback.format_exc())
-        return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
-
-# --- End of Short Answer Route ---
+        message = client.messages.create(model=ANTHROPIC_MODEL_NAME, max_tokens=1200 + (num_questions * 100), temperature=0.7, messages=[{ "role": "user", "content": prompt_content }])
+        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'): generated_content = message.content[0].text
+        else: raise ValueError("Failed to parse content from AI response.")
+        logging.info(f"Generated SA content length: {len(generated_content)} chars")
+        return jsonify({'status': 'success', 'short_answer_content': generated_content.strip()})
+    except ValueError as ve: logging.warning(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
+    except (anthropic.APIError, httpx.RequestError) as e: return handle_anthropic_error(e)
+    except Exception as e: logging.error(f"Unexpected error in /generate_short_answer: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Internal server error.'}), 500
 
 @app.route('/generate_pasted_comprehension', methods=['POST'])
 def generate_pasted_comprehension_route():
-    """Handles POST requests to generate comprehension questions from pasted text."""
-    print("Received request at /generate_pasted_comprehension")
-
+    logging.info("Received request at /generate_pasted_comprehension")
     if client is None: return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
     if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
-
     try:
-        data = request.get_json()
-        pasted_text = data.get('pasted_text') # Get the pasted text
-        num_questions_req = data.get('num_questions', 5)
+        data = request.get_json(); pasted_text = data.get('pasted_text'); num_questions_req = data.get('num_questions', 5)
+        if not pasted_text or not pasted_text.strip(): return jsonify({'status': 'error', 'message': 'Missing "pasted_text"'}), 400
+        try: num_questions = int(num_questions_req); assert 2 <= num_questions <= 15
+        except (ValueError, TypeError, AssertionError): return jsonify({'status': 'error', 'message': 'Invalid num_questions (must be int 2-15)'}), 400
+        logging.info(f"Pasted Text Comp request: NumQuestions={num_questions}, Text Length={len(pasted_text)}")
+        prompt_content = create_pasted_comprehension_prompt(pasted_text, num_questions)
+        message = client.messages.create(model=ANTHROPIC_MODEL_NAME, max_tokens=1500 + (num_questions * 100), temperature=0.7, messages=[{ "role": "user", "content": prompt_content }])
+        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'): generated_content = message.content[0].text
+        else: raise ValueError("Failed to parse content from AI response.")
+        logging.info(f"Generated Pasted Text Comp content length: {len(generated_content)} chars")
+        return jsonify({'status': 'success', 'pasted_comprehension_content': generated_content.strip()})
+    except ValueError as ve: logging.warning(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
+    except (anthropic.APIError, httpx.RequestError) as e: return handle_anthropic_error(e)
+    except Exception as e: logging.error(f"Unexpected error in /generate_pasted_comprehension: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Internal server error.'}), 500
 
-        # --- Validation ---
-        if not pasted_text or not pasted_text.strip(): # Check if text was provided and isn't just whitespace
-            return jsonify({'status': 'error', 'message': 'Missing "pasted_text" in request data'}), 400
-        try:
-            num_questions = int(num_questions_req)
-            if not 2 <= num_questions <= 15: # Use appropriate range
-                raise ValueError("Number of questions must be between 2 and 15.")
-        except (ValueError, TypeError):
-             return jsonify({'status': 'error', 'message': 'Invalid number of questions specified (must be an integer between 2 and 15).'}), 400
-
-        print(f"Received Pasted Text Comp request: NumQuestions={num_questions}, Text Length={len(pasted_text)}")
-
-        # --- Create Prompt ---
-        prompt_content = create_pasted_comprehension_prompt(pasted_text, num_questions) # Call the new prompt function
-
-        # --- Call Anthropic API ---
-        print(f"Sending Pasted Text Comp request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
-        # Use try/except block around the API call for specific Anthropic errors
-        try:
-            message = client.messages.create(
-                model=ANTHROPIC_MODEL_NAME,
-                max_tokens=1500 + (num_questions * 100), # Estimate tokens needed
-                temperature=0.7,
-                messages=[{ "role": "user", "content": prompt_content }]
-            )
-            print("Received response from Anthropic API successfully.")
-        except anthropic.AuthenticationError as auth_err: print(f"Anthropic Authentication Error: {auth_err}"); return jsonify({'status': 'error', 'message': f'AI Authentication Error: {auth_err}'}), 401
-        except anthropic.APIConnectionError as conn_err: print(f"Anthropic Connection Error: {conn_err}"); return jsonify({'status': 'error', 'message': f'AI Connection Error: {conn_err}'}), 503
-        except anthropic.RateLimitError as rate_err: print(f"Anthropic Rate Limit Error: {rate_err}"); return jsonify({'status': 'error', 'message': 'AI Rate Limit Exceeded.'}), 429
-        except anthropic.APIStatusError as status_err:
-            # --- Start of APIStatusError block ---
-            print(f"Anthropic API Status Error: Status Code: {status_err.status_code}, Response: {status_err.response}")
-            error_message = f'AI service error (Status {status_err.status_code})'
-
-            # --- Start of nested try (indented) ---
-            try:
-                error_details = status_err.response.json()
-                error_message += f": {error_details.get('error', {}).get('message', status_err.response.text)}"
-            # --- Nested except (indented to match nested try) ---
-            except Exception:
-                # --- Line inside nested except (indented further) ---
-                error_message += f": {status_err.response.text}"
-            # --- End of nested try...except ---
-
-            # This return belongs to the outer APIStatusError block (indented same as print/error_message assignment)
-            return jsonify({'status': 'error', 'message': error_message}), status_err.status_code
-        except Exception as api_call_err: print(f"Unexpected error DURING Anthropic API call: {api_call_err}"); print(traceback.format_exc()); return jsonify({'status': 'error', 'message': f'Unexpected error during AI call: {api_call_err}'}), 500
-
-        # --- Extract Result ---
-        generated_content = ""
-        if message and message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
-            generated_content = message.content[0].text
-        else:
-             print(f"Warning: Unexpected API response structure or empty content after successful call. Response: {message}"); return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
-
-        print(f"Generated Pasted Text Comp content length: {len(generated_content)} chars")
-
-        # --- Return Result (use a distinct key) ---
-        return jsonify({
-            'status': 'success',
-            'pasted_comprehension_content': generated_content.strip() # Use specific key
-        })
-
-    # --- General Error Handling for route logic ---
-    except ValueError as ve: print(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
-    except Exception as e:
-        print(f"An unexpected error occurred in /generate_pasted_comprehension route logic: {e}"); 
-        print(traceback.format_exc()); 
-        return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
-
-# --- End of Pasted Comprehension Route ---
-# --- Route for Similar Question Generation ---
 @app.route('/generate_similar_questions', methods=['POST'])
 def generate_similar_questions_route():
-    """Handles POST requests to generate similar questions from an example."""
-    print("Received request at /generate_similar_questions")
-
+    logging.info("Received request at /generate_similar_questions")
     if client is None: return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
     if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
-
     try:
-        data = request.get_json()
-        example_question = data.get('example_question')
-        num_questions_req = data.get('num_questions', 3) # Default to 3 similar questions
-        grade_level = data.get('grade_level', 'Not Specified') # Optional grade level
-        # Add lines here to get variation flags if you implemented them:
-        # allow_unit_conversion = data.get('allow_unit_conversion', False)
+        data = request.get_json(); example_question = data.get('example_question'); num_questions_req = data.get('num_questions', 3); grade_level = data.get('grade_level', 'Not Specified')
+        if not example_question or not example_question.strip(): return jsonify({'status': 'error', 'message': 'Missing "example_question"'}), 400
+        try: num_questions = int(num_questions_req); assert 1 <= num_questions <= 10
+        except (ValueError, TypeError, AssertionError): return jsonify({'status': 'error', 'message': 'Invalid num_questions (must be int 1-10)'}), 400
+        logging.info(f"SimilarQ request: NumQuestions={num_questions}, Grade='{grade_level}', Example Length={len(example_question)}")
+        prompt_content = create_similar_questions_prompt(example_question, num_questions, grade_level)
+        message = client.messages.create(model=ANTHROPIC_MODEL_NAME, max_tokens=1000 + (num_questions * 200), temperature=0.75, messages=[{ "role": "user", "content": prompt_content }])
+        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'): generated_content = message.content[0].text
+        else: raise ValueError("Failed to parse content from AI response.")
+        logging.info(f"Generated SimilarQ content length: {len(generated_content)} chars")
+        return jsonify({'status': 'success', 'similar_questions_content': generated_content.strip()})
+    except ValueError as ve: logging.warning(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
+    except (anthropic.APIError, httpx.RequestError) as e: return handle_anthropic_error(e)
+    except Exception as e: logging.error(f"Unexpected error in /generate_similar_questions: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Internal server error.'}), 500
 
-        # --- Validation ---
-        if not example_question or not example_question.strip():
-            return jsonify({'status': 'error', 'message': 'Missing "example_question" in request data'}), 400
-        try:
-            num_questions = int(num_questions_req)
-            if not 1 <= num_questions <= 10: # Range for similar questions
-                raise ValueError("Number of questions must be between 1 and 10.")
-        except (ValueError, TypeError):
-             return jsonify({'status': 'error', 'message': 'Invalid number of questions specified (must be an integer between 1 and 10).'}), 400
-
-        print(f"Received SimilarQ request: NumQuestions={num_questions}, Grade='{grade_level}', Example Length={len(example_question)}")
-
-        # --- Create Prompt ---
-        prompt_content = create_similar_questions_prompt(
-            example_question,
-            num_questions,
-            grade_level
-            # Pass variation flags here if needed: allow_unit_conversion=allow_unit_conversion
-        )
-
-        # --- Call Anthropic API ---
-        print(f"Sending SimilarQ request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
-        # Use try/except block around the API call
-        try:
-            message = client.messages.create(
-                model=ANTHROPIC_MODEL_NAME,
-                # Adjust max_tokens based on num_questions and expected complexity/steps
-                max_tokens=1000 + (num_questions * 200),
-                temperature=0.75, # Might need slightly higher temp for creativity in scenarios?
-                messages=[{ "role": "user", "content": prompt_content }]
-            )
-            print("Received response from Anthropic API successfully.")
-        # --- Add FULL specific Anthropic error handling ---
-        except anthropic.AuthenticationError as auth_err: print(f"Anthropic Authentication Error: {auth_err}"); return jsonify({'status': 'error', 'message': f'AI Authentication Error: {auth_err}'}), 401
-        except anthropic.APIConnectionError as conn_err: print(f"Anthropic Connection Error: {conn_err}"); return jsonify({'status': 'error', 'message': f'AI Connection Error: {conn_err}'}), 503
-        except anthropic.RateLimitError as rate_err: print(f"Anthropic Rate Limit Error: {rate_err}"); return jsonify({'status': 'error', 'message': 'AI Rate Limit Exceeded.'}), 429
-        except anthropic.APIStatusError as status_err:
-            print(f"Anthropic API Status Error: Status Code: {status_err.status_code}, Response: {status_err.response}") # No semicolon
-            error_message = f'AI service error (Status {status_err.status_code})' # No semicolon
-
-            # --- Start of nested try ---
-            try:
-                error_details = status_err.response.json() # No semicolon
-                error_message += f": {error_details.get('error', {}).get('message', status_err.response.text)}" # No semicolon
-            # --- Nested except ---
-            except Exception:
-                # --- Line inside nested except ---
-                error_message += f": {status_err.response.text}" # No semicolon
-            # --- End of nested try...except ---
-
-            # *** CORRECTED: Return statement moved OUTSIDE and AFTER nested try/except ***
-            # It is indented to match the 'print' and initial 'error_message' assignment above.
-            return jsonify({'status': 'error', 'message': error_message}), status_err.status_code
-        # --- End of APIStatusError block ---
-
-        except Exception as api_call_err: # Correct outer level
-            print(f"Unexpected error DURING Anthropic API call: {api_call_err}") # No semicolon needed if followed by newline
-            print(traceback.format_exc()) # No semicolon
-            return jsonify({'status': 'error', 'message': f'Unexpected error during AI call: {api_call_err}'}), 500 # No semicolon
-
-
-        # --- Extract Result ---
-        generated_content = ""
-        if message and message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
-            generated_content = message.content[0].text
-        else:
-             print(f"Warning: Unexpected API response structure or empty content after successful call. Response: {message}"); return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
-
-        print(f"Generated SimilarQ content length: {len(generated_content)} chars")
-
-        # --- Return Result (use a distinct key) ---
-        return jsonify({
-            'status': 'success',
-            'similar_questions_content': generated_content.strip() # Use specific key
-        })
-
-    # --- General Error Handling ---
-    except ValueError as ve: print(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
-    except Exception as e:
-        print(f"An unexpected error occurred in /generate_similar_questions route logic: {e}"); print(traceback.format_exc()); return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
-
-# --- End of Similar Questions Route ---
-# --- Route to Serve the Frontend HTML ---
-@app.route('/')
-def serve_index():
-    """Serves the index.html file."""
-    print("Serving index.html")
-    return send_from_directory('.', 'index.html')
-# --- Route to Save Generated/Edited Item ---
-@app.route('/save_item', methods=['POST'])
-def save_item_route():
-    """Handles POST requests to save an item to the database."""
-    print("--- save_item route entered ---")
-
-    if not request.is_json:
-        print("ERROR save_item: Request is not JSON")
-        return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
-
-    data = request.get_json()
-    print(f"DEBUG save_item: Received data keys: {list(data.keys())}")
-
-    # --- Extract data from payload ---
-    item_type = data.get('item_type')
-    source_topic = data.get('source_topic')
-    source_url = data.get('source_url')
-    grade_level = data.get('grade_level')
-    content_html = data.get('content_html')
-
-    # --- Basic Validation ---
-    # Check for essential fields first
-    if not item_type or not grade_level or not content_html:
-         print(f"ERROR save_item: Missing required fields. Got type: {item_type}, grade: {grade_level}, content: {bool(content_html)}")
-         return jsonify({'status': 'error', 'message': 'Missing required fields: item_type, grade_level, content_html'}), 400
-
-    # Optional: Mode-specific validation (Uncomment/adjust if needed)
-    # if item_type == 'gapFill' and not source_topic:
-    #      print("ERROR save_item: Missing source_topic for gapFill")
-    #      return jsonify({'status': 'error', 'message': 'Missing source_topic for gapFill item'}), 400
-    # if item_type == 'youtube' and not source_url: # Update 'youtube' if type name changed
-    #      print("ERROR save_item: Missing source_url for youtube item")
-    #      return jsonify({'status': 'error', 'message': 'Missing source_url for youtube item'}), 400
-
-    print(f"DEBUG save_item: Preparing to create item: type={item_type}, grade={grade_level}")
-
-    # --- Create Database Record ---
-    try:
-        # Create the object WITHIN the try block in case of data type issues
-        new_item = GeneratedItem(
-            item_type=item_type,
-            source_topic=source_topic,
-            source_url=source_url,
-            grade_level=grade_level,
-            content_html=content_html
-            # Timestamps are handled by default/onupdate
-        )
-        print(f"DEBUG save_item: GeneratedItem object CREATED: {new_item}") # Now safe to print
-
-        # --- Add to session and commit ---
-        db.session.add(new_item)
-        print("DEBUG save_item: Added to session.")
-        db.session.commit() # This assigns the ID
-        print(f"DEBUG save_item: Commit successful. ID assigned: {new_item.id}")
-
-        # --- Prepare and return success response ---
-        response_data = {'status': 'success', 'item_id': new_item.id}
-        print(f"DEBUG save_item: Returning success data: {response_data}")
-        return jsonify(response_data)
-
-    except Exception as e:
-        db.session.rollback() # Rollback transaction on any error during creation or commit
-        print(f"ERROR save_item: Exception during DB operation: {e}")
-        print(traceback.format_exc()) # Print full traceback to terminal
-        return jsonify({'status': 'error', 'message': f'Database error: {str(e)}'}), 500
-
-# --- End of Save Route ---
-# --- Route to Get Full Content of a Specific Saved Item ---
-@app.route('/get_item/<int:item_id>', methods=['GET'])
-def get_item_route(item_id):
-    """Handles GET requests to retrieve full details for a specific item ID."""
-    print(f"Received request at /get_item/{item_id}")
-    try:
-        # Query the database for the item by its primary key (ID)
-        # .get_or_404() is convenient: returns item or aborts with 404 if not found
-        item = db.session.get(GeneratedItem, item_id) # Simpler query for primary key
-
-        if item is None:
-            print(f"Item with ID {item_id} not found.")
-            return jsonify({'status': 'error', 'message': 'Item not found in library.'}), 404
-
-        print(f"Found item: {item.item_type}, Topic: {item.source_topic}, URL: {item.source_url}")
-
-        # Return the full details, including the crucial content_html
-        item_data = {
-            'id': item.id,
-            'item_type': item.item_type,
-            'source_topic': item.source_topic,
-            'source_url': item.source_url,
-            'grade_level': item.grade_level,
-            'content_html': item.content_html, # Send the full HTML content
-            'creation_date': item.creation_date.isoformat(),
-            'last_modified_date': item.last_modified_date.isoformat()
-        }
-        return jsonify({'status': 'success', 'item': item_data})
-
-    except Exception as e:
-        print(f"Error retrieving item {item_id} from database: {e}")
-        print(traceback.format_exc())
-        return jsonify({'status': 'error', 'message': 'Error retrieving item details.'}), 500
-
-# --- End of Get Item Route ---
-# --- Route to Handle Worksheet Generation ---
 @app.route('/generate_worksheet', methods=['POST']) # This is the Gap Fill route
 def generate_worksheet_route():
-    """Handles POST requests to generate a gap-fill worksheet."""
-    print("Received request at /generate_worksheet (Gap Fill)")
-
+    logging.info("Received request at /generate_worksheet (Gap Fill)")
     if client is None: return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
     if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
-
     try:
-        data = request.get_json()
-        topic = data.get('topic')
-        grade_level = data.get('grade_level', 'middle school')
-        # ** ADDED: Get and validate num_sentences **
-        num_sentences_req = data.get('num_sentences', 7) # Default 7
-
-        if not topic:
-            return jsonify({'status': 'error', 'message': 'Missing "topic" in request data'}), 400
-        try:
-            num_sentences = int(num_sentences_req)
-            if not 3 <= num_sentences <= 15: # Use same range as frontend
-                raise ValueError("Number of sentences must be between 3 and 15.")
-        except (ValueError, TypeError):
-             return jsonify({'status': 'error', 'message': 'Invalid number of sentences specified (must be an integer between 3 and 15).'}), 400
-
-        print(f"Received Gap Fill request: Topic='{topic}', Grade='{grade_level}', NumSentences={num_sentences}") # Updated log
-
-        # ** UPDATED: Pass num_sentences to prompt function **
+        data = request.get_json(); topic = data.get('topic'); grade_level = data.get('grade_level', 'middle school'); num_sentences_req = data.get('num_sentences', 7)
+        if not topic: return jsonify({'status': 'error', 'message': 'Missing "topic"'}), 400
+        try: num_sentences = int(num_sentences_req); assert 3 <= num_sentences <= 15
+        except (ValueError, TypeError, AssertionError): return jsonify({'status': 'error', 'message': 'Invalid num_sentences (must be int 3-15)'}), 400
+        logging.info(f"Gap Fill request: Topic='{topic}', Grade='{grade_level}', NumSentences={num_sentences}")
         prompt_content = create_gap_fill_prompt(topic, grade_level, num_sentences)
+        message = client.messages.create(model=ANTHROPIC_MODEL_NAME, max_tokens=500 + (num_sentences * 60), temperature=0.7, messages=[{ "role": "user", "content": prompt_content }])
+        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'): generated_content = message.content[0].text
+        else: raise ValueError("Failed to parse content from AI response.")
+        logging.info(f"Generated Gap Fill content length: {len(generated_content)} chars")
+        return jsonify({'status': 'success', 'worksheet_content': generated_content.strip()})
+    except ValueError as ve: logging.warning(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
+    except (anthropic.APIError, httpx.RequestError) as e: return handle_anthropic_error(e)
+    except Exception as e: logging.error(f"Unexpected error in /generate_worksheet: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Internal server error.'}), 500
 
-        # --- Call Anthropic API (Keep nested try/except for specific errors) ---
-        print(f"Sending Gap Fill request to Anthropic API (Model: {ANTHROPIC_MODEL_NAME})...")
-        try:
-            message = client.messages.create(
-                model=ANTHROPIC_MODEL_NAME,
-                # ** UPDATED: Adjust max_tokens based on number of sentences **
-                max_tokens=500 + (num_sentences * 60), # Rough estimate
-                temperature=0.7,
-                messages=[{ "role": "user", "content": prompt_content }]
-            )
-            print("Received response from Anthropic API successfully.")
-        # ... keep specific anthropic error handling (AuthenticationError, etc.) ...
-        except anthropic.AuthenticationError as auth_err: print(f"Anthropic Authentication Error: {auth_err}"); return jsonify({'status': 'error', 'message': f'AI Authentication Error: {auth_err}'}), 401
-        except anthropic.APIConnectionError as conn_err: print(f"Anthropic Connection Error: {conn_err}"); return jsonify({'status': 'error', 'message': f'AI Connection Error: {conn_err}'}), 503
-        except anthropic.RateLimitError as rate_err: print(f"Anthropic Rate Limit Error: {rate_err}"); return jsonify({'status': 'error', 'message': 'AI Rate Limit Exceeded.'}), 429
-        except anthropic.APIStatusError as status_err: 
-            print(f"Anthropic API Status Error: Status Code: {status_err.status_code}, Response: {status_err.response}"); 
-            error_message = f'AI service error (Status {status_err.status_code})'; 
-            try: 
-                error_details = status_err.response.json(); 
-                error_message += f": {error_details.get('error', {}).get('message', status_err.response.text)}"; 
-            except Exception: error_message += f": {status_err.response.text}"; 
-            return jsonify({'status': 'error', 'message': error_message}), status_err.status_code
-        except Exception as api_call_err: print(f"Unexpected error DURING Anthropic API call: {api_call_err}"); print(traceback.format_exc()); return jsonify({'status': 'error', 'message': f'Unexpected error during AI call: {api_call_err}'}), 500
+# --- Word Search Routes ---
+@app.route('/generate_word_list', methods=['POST'])
+def generate_word_list_route():
+    logging.info("Received request at /generate_word_list")
+    if client is None: return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
+    if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+    try:
+        data = request.get_json(); topic = data.get('topic'); grade_level = data.get('grade_level', 'middle school'); num_words = int(data.get('num_words', 15))
+        if not topic: return jsonify({'status': 'error', 'message': 'Missing "topic"'}), 400
+        if not 5 <= num_words <= 30: return jsonify({'status': 'error', 'message': 'Number of words must be between 5 and 30'}), 400
+        logging.info(f"Word List request: Topic='{topic}', Grade='{grade_level}', NumWords={num_words}")
+        prompt_content = create_word_list_prompt(topic, grade_level, num_words)
+        message = client.messages.create(model=ANTHROPIC_MODEL_NAME, max_tokens=300 + (num_words * 10), temperature=0.5, messages=[{ "role": "user", "content": prompt_content }])
+        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'): generated_content = message.content[0].text.strip()
+        else: raise ValueError("Failed to parse content from AI response.")
+        logging.info(f"Generated word list raw text length: {len(generated_content)} chars")
+        return jsonify({'status': 'success', 'word_list_text': generated_content })
+    except ValueError as ve: logging.error(f"Validation/Processing Error: {ve}", exc_info=True); return jsonify({'status': 'error', 'message': str(ve)}), 400
+    except (anthropic.APIError, httpx.RequestError) as e: return handle_anthropic_error(e)
+    except Exception as e: logging.error(f"Unexpected error in /generate_word_list: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Internal server error.'}), 500
 
+@app.route('/generate_word_search_grid', methods=['POST'])
+def generate_word_search_grid_route():
+    logging.info("Received request at /generate_word_search_grid")
+    if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+    try:
+        data = request.get_json(); word_list_raw = data.get('word_list'); size_preference = data.get('size', 'medium'); allow_backwards = data.get('allow_backwards', False); mask = data.get('mask', None)
+        if not word_list_raw or not isinstance(word_list_raw, list): return jsonify({'status': 'error', 'message': 'Missing or invalid "word_list"'}), 400
+        size_map = {"small": 10, "medium": 13, "large": 15}; dimension = size_map.get(size_preference.lower(), 13)
+        logging.info(f"Attempting grid generation: Size={dimension}x{dimension}, Backwards={allow_backwards}, Mask={mask}, Words={word_list_raw[:5]}...")
+        grid_list, placed_words = generate_wordsearch_grid(wordlist=word_list_raw, nrows=dimension, ncols=dimension, allow_backwards_words=allow_backwards, mask_name=mask, attempts=15)
+        html_output = '<div class="worksheet-section word-search-container">'; html_output += '<h3>Word Search</h3>'
+        html_output += '<table class="word-search-grid" style="border-collapse: collapse; font-family: monospace; margin-bottom: 15px; border: 1px solid #ddd;">'
+        for row_data in grid_list:
+            html_output += '<tr>'
+            for letter in row_data: display_letter = letter if letter.strip() else ' '; html_output += f'<td style="border: 1px solid #eee; width: 25px; height: 25px; text-align: center; vertical-align: middle; padding: 1px;">{display_letter}</td>'
+            html_output += '</tr>'
+        html_output += '</table>'; html_output += '<h3>Word List</h3>'
+        html_output += '<ul class="word-search-list" style="list-style: none; padding-left: 0; columns: 2; -webkit-columns: 2; -moz-columns: 2;">'
+        for word in sorted(placed_words): html_output += f'<li style="margin-bottom: 5px;">{word}</li>'
+        html_output += '</ul></div>'; logging.info(f"Successfully generated word search grid HTML using internal logic.")
+        return jsonify({'status': 'success', 'content_html': html_output})
+    except (ValueError, PuzzleGenerationError) as gen_err: logging.warning(f"Word search generation failed: {gen_err}"); return jsonify({'status': 'error', 'message': str(gen_err)}), 400
+    except Exception as e: logging.error(f"Unexpected error in /generate_word_search_grid: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'An internal server error occurred creating the word search.'}), 500
 
-        # --- Extract Result ---
-        generated_content = ""
-        if message and message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
-            generated_content = message.content[0].text
-        else:
-             print(f"Warning: Unexpected API response structure or empty content. Response: {message}"); return jsonify({'status': 'error', 'message': 'Failed to parse content from AI response.'}), 500
+# --- Item/Worksheet Persistence Routes ---
+@app.route('/save_item', methods=['POST'])
+def save_item_route():
+    logging.info("--- save_item route entered ---")
+    if not request.is_json: logging.error("save_item: Request is not JSON"); return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+    data = request.get_json(); logging.debug(f"save_item: Received data keys: {list(data.keys())}")
+    item_type = data.get('item_type'); source_topic = data.get('source_topic'); source_url = data.get('source_url'); grade_level = data.get('grade_level'); content_html = data.get('content_html')
+    if not item_type or not grade_level or not content_html: logging.error(f"save_item: Missing required fields. Got type: {item_type}, grade: {grade_level}, content: {bool(content_html)}"); return jsonify({'status': 'error', 'message': 'Missing required fields: item_type, grade_level, content_html'}), 400
+    logging.debug(f"save_item: Preparing to create item: type={item_type}, grade={grade_level}")
+    try:
+        new_item = GeneratedItem(item_type=item_type, source_topic=source_topic, source_url=source_url, grade_level=grade_level, content_html=content_html)
+        logging.debug(f"save_item: GeneratedItem object CREATED: {new_item}")
+        db.session.add(new_item); logging.debug("save_item: Added to session.")
+        db.session.commit(); logging.info(f"save_item: Commit successful. ID assigned: {new_item.id}")
+        response_data = {'status': 'success', 'item_id': new_item.id}; logging.debug(f"save_item: Returning success data: {response_data}")
+        return jsonify(response_data)
+    except Exception as e: db.session.rollback(); logging.error(f"save_item: Exception during DB operation: {e}", exc_info=True); return jsonify({'status': 'error', 'message': f'Database error: {str(e)}'}), 500
 
-        print(f"Generated Gap Fill content length: {len(generated_content)} chars")
+@app.route('/get_item/<int:item_id>', methods=['GET'])
+def get_item_route(item_id):
+    logging.info(f"Received request at /get_item/{item_id}")
+    try:
+        item = db.session.get(GeneratedItem, item_id)
+        if item is None: logging.warning(f"Item with ID {item_id} not found."); return jsonify({'status': 'error', 'message': 'Item not found in library.'}), 404
+        logging.info(f"Found item: {item.item_type}")
+        item_data = {'id': item.id, 'item_type': item.item_type, 'source_topic': item.source_topic, 'source_url': item.source_url,
+                       'grade_level': item.grade_level, 'content_html': item.content_html, 'creation_date': item.creation_date.isoformat(),
+                       'last_modified_date': item.last_modified_date.isoformat()}
+        return jsonify({'status': 'success', 'item': item_data})
+    except Exception as e: logging.error(f"Error retrieving item {item_id} from database: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Error retrieving item details.'}), 500
 
-        # --- Return Result ---
-        return jsonify({
-            'status': 'success',
-            'worksheet_content': generated_content.strip() # Keep original response key
-        })
-
-    # --- General Error Handling ---
-    except ValueError as ve: print(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
-    except Exception as e:
-        print(f"An unexpected error occurred in /generate_worksheet route logic: {e}"); print(traceback.format_exc()); return jsonify({'status': 'error', 'message': 'An internal server error occurred.'}), 500
-
-        # Log content length
-        print(f"Generated content length: {len(generated_text)} characters")
-
-        # --- Return the Result to the Frontend ---
-        return jsonify({
-            'status': 'success',
-            'worksheet_content': generated_text.strip()
-        })
-
-    # --- Specific Error Handling for Anthropic API ---
-    except anthropic.APIConnectionError as e:
-        print(f"API Connection Error: {e}")
-        return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
-    except anthropic.RateLimitError as e:
-        print(f"API Rate Limit Error: {e}")
-        return jsonify({'status': 'error', 'message': 'Rate limit exceeded. Please try again later.'}), 429
-    except anthropic.APIStatusError as e:
-        print(f"API Status Error: Status Code: {e.status_code}, Response: {e.response}")
-        error_message = f'AI service error (Status {e.status_code})'
-        try:
-            error_details = e.response.json()
-            error_message += f": {error_details.get('error', {}).get('message', e.response.text)}"
-        except Exception:
-            error_message += f": {e.response.text}"
-        return jsonify({'status': 'error', 'message': error_message}), e.status_code
-    # --- General Error Handling ---
-    except Exception as e:
-        print(f"An unexpected error occurred in /generate_worksheet: {e}")
-        print(traceback.format_exc())
-        return jsonify({'status': 'error', 'message': f'An internal server error occurred.'}), 500
-
-# --- Route to Save Assembled Worksheet ---
 @app.route('/save_worksheet', methods=['POST'])
 def save_worksheet_route():
-    """Handles POST requests to save the assembled worksheet structure."""
-    print("Received request at /save_worksheet")
-    if not request.is_json:
-        return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
-
-    data = request.get_json()
-    worksheet_title = data.get('title', 'Untitled Worksheet') # Get title from frontend
-    item_ids_ordered = data.get('item_ids') # Get ordered list of GeneratedItem IDs
-
-    if not item_ids_ordered or not isinstance(item_ids_ordered, list):
-        return jsonify({'status': 'error', 'message': 'Missing or invalid "item_ids" list in request data'}), 400
-
-    print(f"Attempting to save worksheet: Title='{worksheet_title}', Item IDs={item_ids_ordered}")
-
+    logging.info("Received request at /save_worksheet")
+    if not request.is_json: return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+    data = request.get_json(); worksheet_title = data.get('title', 'Untitled Worksheet'); item_ids_ordered = data.get('item_ids')
+    if not item_ids_ordered or not isinstance(item_ids_ordered, list): return jsonify({'status': 'error', 'message': 'Missing or invalid "item_ids" list'}), 400
+    logging.info(f"Attempting to save worksheet: Title='{worksheet_title}', Item IDs={item_ids_ordered}")
     try:
-        # 1. Create the new Worksheet record
-        new_worksheet = Worksheet(title=worksheet_title)
-        # TODO: Add user_id=current_user.id here when login is implemented
-        db.session.add(new_worksheet)
-        # We need to flush to get the new_worksheet.id before creating associations
-        db.session.flush()
-        worksheet_id = new_worksheet.id
-
-        # 2. Clear existing items for this worksheet if it were an update (optional)
-        # For simplicity now, we assume it's always a new save. Update logic is more complex.
-        # new_worksheet.items[:] = [] # Clears relationship if needed for update
-
-        # 3. Add items to the relationship via the association table, preserving order
-        items_to_add = []
-        order_index = 0
+        new_worksheet = Worksheet(title=worksheet_title); db.session.add(new_worksheet); db.session.flush(); worksheet_id = new_worksheet.id
+        items_to_add = []; order_index = 0
         for item_id in item_ids_ordered:
             generated_item = db.session.get(GeneratedItem, int(item_id))
             if generated_item:
-                # Create association explicitly to set order easily
-                # Note: This directly manipulates the association table instance.
-                # SQLAlchemy handles adding the 'generated_item' to 'new_worksheet.items' through the relationship.
-                assoc_insert = worksheet_items_association.insert().values(
-                    worksheet_id=worksheet_id,
-                    generated_item_id=generated_item.id,
-                    item_order=order_index
-                )
-                db.session.execute(assoc_insert) # Execute the insert statement
-                items_to_add.append(generated_item.id) # Keep track for logging/confirmation
-                order_index += 1
-            else:
-                print(f"Warning: GeneratedItem with ID {item_id} not found while saving worksheet {worksheet_id}. Skipping.")
-                # Optionally raise an error or return a specific warning?
-
-        # 4. Commit the transaction
-        db.session.commit()
-
-        print(f"Successfully saved Worksheet ID: {worksheet_id} with item IDs: {items_to_add} in order.")
+                assoc_insert = worksheet_items_association.insert().values(worksheet_id=worksheet_id, generated_item_id=generated_item.id, item_order=order_index)
+                db.session.execute(assoc_insert); items_to_add.append(generated_item.id); order_index += 1
+            else: logging.warning(f"GeneratedItem ID {item_id} not found while saving worksheet {worksheet_id}. Skipping.")
+        db.session.commit(); logging.info(f"Successfully saved Worksheet ID: {worksheet_id} with item IDs: {items_to_add} in order.")
         return jsonify({'status': 'success', 'message': 'Worksheet saved successfully!', 'worksheet_id': worksheet_id})
+    except Exception as e: db.session.rollback(); logging.error(f"Error saving worksheet to database: {e}", exc_info=True); return jsonify({'status': 'error', 'message': f'Database error while saving worksheet: {e}'}), 500
 
-    except Exception as e:
-        db.session.rollback() # Rollback on any error
-        print(f"Error saving worksheet to database: {e}")
-        print(traceback.format_exc())
-        return jsonify({'status': 'error', 'message': f'Database error while saving worksheet: {e}'}), 500
-# --- End of Save Worksheet Route ---
-# --- Route to List Saved Worksheets ---
 @app.route('/list_worksheets', methods=['GET'])
 def list_worksheets_route():
-    """Handles GET requests to retrieve a list of saved worksheets."""
-    print("Received request at /list_worksheets")
+    logging.info("Received request at /list_worksheets")
     try:
-        # TODO: Filter by logged-in user when users are implemented
-        # worksheets = Worksheet.query.filter_by(user_id=current_user.id).order_by(Worksheet.last_modified_date.desc()).all()
-        worksheets = Worksheet.query.order_by(Worksheet.last_modified_date.desc()).limit(50).all() # Limit for now
-
-        worksheets_list = []
-        for ws in worksheets:
-            worksheets_list.append({
-                'id': ws.id,
-                'title': ws.title,
-                'creation_date': ws.creation_date.isoformat(),
-                'last_modified_date': ws.last_modified_date.isoformat(),
-                # 'item_count': ws.items.count() # Count items if needed (might be slow with lazy='dynamic')
-            })
-
+        worksheets = Worksheet.query.order_by(Worksheet.last_modified_date.desc()).limit(50).all()
+        worksheets_list = [{'id': ws.id, 'title': ws.title, 'creation_date': ws.creation_date.isoformat(),
+                            'last_modified_date': ws.last_modified_date.isoformat()} for ws in worksheets]
         return jsonify({'status': 'success', 'worksheets': worksheets_list})
+    except Exception as e: logging.error(f"Error retrieving worksheets from database: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Error retrieving worksheet list.'}), 500
 
-    except Exception as e:
-        print(f"Error retrieving worksheets from database: {e}")
-        print(traceback.format_exc())
-        return jsonify({'status': 'error', 'message': 'Error retrieving worksheet list.'}), 500
-# --- End of List Worksheets Route ---
-
-# --- Route to Load a Specific Worksheet ---
 @app.route('/load_worksheet/<int:worksheet_id>', methods=['GET'])
 def load_worksheet_route(worksheet_id):
-    """Handles GET requests to retrieve the items for a specific worksheet ID."""
-    print(f"Received request at /load_worksheet/{worksheet_id}")
+    logging.info(f"Received request at /load_worksheet/{worksheet_id}")
     try:
-        # TODO: Add check: Ensure worksheet belongs to the current user when login is implemented
-        worksheet = db.session.get(Worksheet, worksheet_id) # Fetch worksheet by ID
+        worksheet = db.session.get(Worksheet, worksheet_id)
+        if worksheet is None: return jsonify({'status': 'error', 'message': 'Worksheet not found.'}), 404
+        ordered_items = worksheet.items # Relationship handles ordering
+        items_data = [{'id': item.id, 'item_type': item.item_type, 'source_topic': item.source_topic, 'source_url': item.source_url,
+                       'grade_level': item.grade_level, 'content_html': item.content_html} for item in ordered_items]
+        logging.info(f"Returning {len(items_data)} items for Worksheet ID: {worksheet_id}")
+        return jsonify({'status': 'success', 'worksheet_title': worksheet.title, 'items': items_data})
+    except Exception as e: logging.error(f"Error retrieving worksheet {worksheet_id} from database: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Error retrieving worksheet details.'}), 500
 
-        if worksheet is None:
-            return jsonify({'status': 'error', 'message': 'Worksheet not found.'}), 404
-
-        # Access the 'items' relationship - SQLAlchemy loads them ordered by item_order
-        # Because lazy='dynamic', worksheet.items is a query object. Use .all() to execute.
-        ordered_items = worksheet.items # Get the actual GeneratedItem objects in order
-
-        items_data = []
-        for item in ordered_items:
-            items_data.append({
-                # Include all necessary data for frontend rendering
-                'id': item.id,
-                'item_type': item.item_type,
-                'source_topic': item.source_topic,
-                'source_url': item.source_url,
-                'grade_level': item.grade_level,
-                'content_html': item.content_html # Send full HTML needed for display
-            })
-
-        print(f"Returning {len(items_data)} items for Worksheet ID: {worksheet_id}")
-        return jsonify({
-            'status': 'success',
-            'worksheet_title': worksheet.title, # Also return title
-            'items': items_data # Return the list of items with their content
-            })
-
-    except Exception as e:
-        print(f"Error retrieving worksheet {worksheet_id} from database: {e}")
-        print(traceback.format_exc())
-        return jsonify({'status': 'error', 'message': 'Error retrieving worksheet details.'}), 500
-# --- End of Load Worksheet Route ---
-
-@app.route('/generate_comprehension', methods=['POST'])
-def generate_comprehension_route():
-    """Handles POST requests to generate comprehension questions from a YouTube URL."""
-    print("Received request at /generate_comprehension")
-
-    if client is None:
-        print("Error: Anthropic client not initialized.")
-        return jsonify({'status': 'error', 'message': 'Server error: AI client not initialized'}), 500
-
-    if not request.is_json:
-        print("Error: Request is not JSON.")
-        return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
-
-    try:
-        data = request.get_json()
-        youtube_url = data.get('youtube_url')
-        num_questions_req = data.get('num_questions', 5)  # Get value, default to 5
-        
-        try:
-            num_questions = int(num_questions_req)
-            if not 2 <= num_questions <= 20:  # Validate range (e.g., 2-20)
-                print(f"Error: Invalid number of questions requested: {num_questions}")
-                raise ValueError("Number of questions must be between 2 and 20.")
-        except (ValueError, TypeError):
-            print(f"Error: Invalid type or value for num_questions: {num_questions_req}")
-            return jsonify({'status': 'error', 'message': 'Invalid number of questions specified (must be an integer between 2 and 20).'}), 400
-
-        if not youtube_url:
-            return jsonify({'status': 'error', 'message': 'Missing "youtube_url" in request data'}), 400
-
-        # Log the number of questions requested
-        print(f"Received YouTube URL: {youtube_url}, Num Questions: {num_questions}")
-
-        # --- Extract Video ID ---
-        video_id = extract_video_id(youtube_url)
-        if not video_id:
-            print(f"Error: Could not extract Video ID from URL: {youtube_url}")
-            return jsonify({'status': 'error', 'message': f'Invalid YouTube URL format: {youtube_url}'}), 400
-        
-        print(f"Extracted Video ID: {video_id}")
-
-        # --- Get Transcript ---
-        transcript_text = ""
-        try:
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'en-US'])  # Prioritize English
-            # Combine transcript parts into a single string
-            transcript_text = " ".join([item['text'] for item in transcript_list])
-            print(f"Successfully fetched transcript, length: {len(transcript_text)} characters.")
-            if not transcript_text.strip():  # Check if transcript is empty after joining
-                print(f"Warning: Fetched transcript for {video_id} is empty.")
-                return jsonify({'status': 'error', 'message': 'Transcript found but it is empty.'}), 400
-                
-        except TranscriptsDisabled:
-            print(f"Error: Transcripts are disabled for video: {video_id}")
-            return jsonify({'status': 'error', 'message': 'Transcripts are disabled for this video.'}), 400
-        except NoTranscriptFound:
-            print(f"Error: No English transcript found for video: {video_id}")
-            return jsonify({'status': 'error', 'message': 'No English transcript found for this video.'}), 404
-        except Exception as e:  # Catch other potential errors from the library
-            print(f"Error fetching transcript for {video_id}: {e}")
-            print(traceback.format_exc())
-            return jsonify({'status': 'error', 'message': f'Could not fetch transcript: {e}'}), 500
-
-        # --- Generate Comprehension Questions Prompt ---
-        # Pass the validated num_questions to the prompt function
-        prompt_content = create_comprehension_prompt(transcript_text, num_questions)
-
-        # --- Call Anthropic API ---
-        print(f"Sending transcript to Anthropic API (Model: {ANTHROPIC_MODEL_NAME}, requesting {num_questions} questions)...")
-        message = client.messages.create(
-            model=ANTHROPIC_MODEL_NAME,
-            max_tokens=1000 + (num_questions * 50),  # Dynamically adjust tokens slightly based on question count
-            temperature=0.7,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt_content
-                }
-            ]
-        )
-        print("Received response from Anthropic API.")
-
-        # --- Extract Result ---
-        generated_questions = ""
-        if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'):
-            generated_questions = message.content[0].text
-        else:
-            print(f"Warning: Unexpected API response structure or empty content. Response: {message}")
-            return jsonify({'status': 'error', 'message': 'Failed to parse questions from AI response.'}), 500
-
-        print(f"Generated Questions length: {len(generated_questions)} chars")
-
-        # --- Return Result ---
-        return jsonify({
-            'status': 'success',
-            'comprehension_questions': generated_questions.strip()
-        })
-
-    # --- Error Handling ---
-    except anthropic.APIConnectionError as e:
-        print(f"API Connection Error: {e}")
-        return jsonify({'status': 'error', 'message': f'Failed to connect to AI service: {e}'}), 503
-    except anthropic.RateLimitError as e:
-        print(f"API Rate Limit Error: {e}")
-        return jsonify({'status': 'error', 'message': 'Rate limit exceeded. Please try again later.'}), 429
-    except anthropic.APIStatusError as e:
-        print(f"API Status Error: Status Code: {e.status_code}, Response: {e.response}")
-        error_message = f'AI service error (Status {e.status_code})'
-        try:
-            error_details = e.response.json()
-            error_message += f": {error_details.get('error', {}).get('message', e.response.text)}"
-        except Exception:
-            error_message += f": {e.response.text}"
-        return jsonify({'status': 'error', 'message': error_message}), e.status_code
-    except ValueError as ve:  # Catch the validation error we added
-        print(f"Validation Error: {ve}")
-        return jsonify({'status': 'error', 'message': str(ve)}), 400  # Return 400 for validation errors
-    except Exception as e:
-        print(f"An unexpected error occurred in /generate_comprehension: {e}")
-        print(traceback.format_exc())
-        return jsonify({'status': 'error', 'message': f'An internal server error occurred.'}), 500
-
+# --- Export and Frontend Routes ---
 @app.route('/export/docx/<int:worksheet_id>')
 def export_worksheet_docx(worksheet_id):
     """Exports a specific worksheet as a DOCX file."""
-    logging.info(f"Received request to export worksheet ID: {worksheet_id} as DOCX.")
+    logging.info(f"Request: /export/docx/{worksheet_id}") # DEBUG Line 1
     try:
         worksheet = Worksheet.query.get_or_404(worksheet_id)
         items = worksheet.items # Ordered based on relationship definition
+        logging.info(f"Found worksheet '{worksheet.title}' with {len(items)} items.") # DEBUG Line 2
 
         document = docx.Document()
+        logging.debug("Initialized docx Document.") # DEBUG Line 3
 
-        # --- Apply Document Formatting ---
-        target_font = 'Century Gothic'
+        # Apply Document Formatting
+        target_font='Century Gothic'
         try:
             normal_style = document.styles['Normal']
             normal_style.font.name = target_font
-            # normal_style.font.size = Pt(11) # Optional
-            logging.info(f"Default document font set to {target_font}.")
+            logging.info(f"Set Normal font to {target_font}") # DEBUG Line 4
         except Exception as font_e:
             logging.warning(f"Could not set default font to {target_font}: {font_e}")
 
         try:
             h3_style = document.styles['Heading 3']
             h3_style.font.name = target_font
-            # Optional: Adjust Heading 3 size/bold if needed
-            # h3_style.font.size = Pt(13)
-            # h3_style.font.bold = True
-            logging.info(f"Heading 3 font set to {target_font}.")
+            logging.info(f"Set H3 font to {target_font}") # DEBUG Line 5
         except Exception as style_e:
             logging.warning(f"Could not modify Heading 3 style: {style_e}")
 
         try:
             section = document.sections[0]
-            section.left_margin = Inches(0.5)
-            section.right_margin = Inches(0.5)
-            section.top_margin = Inches(0.5)
-            section.bottom_margin = Inches(0.5)
-            logging.info("Margins set to Narrow (0.5 inches).")
+            section.left_margin=Inches(0.5); section.right_margin=Inches(0.5)
+            section.top_margin=Inches(0.5); section.bottom_margin=Inches(0.5)
+            logging.info("Set narrow margins.") # DEBUG Line 6
         except Exception as margin_e:
             logging.warning(f"Could not set margins: {margin_e}")
-        # --- End Formatting ---
 
+        # Add Worksheet Title
         document.add_heading(worksheet.title, level=1)
         document.add_paragraph() # Space after title
+        logging.debug(f"Added worksheet title: {worksheet.title}") # DEBUG Line 7
 
-        # --- Add Worksheet Items ---
+        # --- Add Worksheet Items Loop ---
+        logging.info("Starting item processing loop...") # DEBUG Line 8
         for item_index, item in enumerate(items):
-            logging.debug(f"Processing item {item_index + 1} (ID: {item.id}, Type: {item.item_type})")
+            logging.debug(f"--- Processing item index: {item_index}, ID: {item.id}, Type: {item.item_type} ---") # DEBUG Line 9
             soup = BeautifulSoup(item.content_html, 'lxml')
-            # Find top-level content elements more robustly
-            content_elements = list(soup.find('body').find_all(True, recursive=False)) if soup.find('body') else list(soup.find_all(True, recursive=False))
+            word_search_container = soup.find('div', class_='word-search-container')
 
-            if not content_elements: # Handle case where HTML might be just text
-                if soup.get_text(strip=True):
-                     document.add_paragraph(soup.get_text(strip=True))
-                continue # Go to next item if no elements found
+            # Initialize variable for tracing
+            processed_as_type = "Unknown" # DEBUG Line 10
 
-            for element in content_elements:
-                if element.name == 'p':
-                    para = document.add_paragraph()
-                    add_runs_from_html_element(para, element)
-                elif element.name in ['ol', 'ul']:
-                    list_items = element.find_all('li', recursive=False)
-                    style = 'List Number' if element.name == 'ol' else 'List Bullet'
-                    for li in list_items:
-                        para = document.add_paragraph(style=style)
-                        add_runs_from_html_element(para, li)
-                    # Attempt numbering reset with tiny font paragraph
-                    reset_para = document.add_paragraph()
-                    run = reset_para.add_run()
-                    run.font.size = Pt(1)
-                    logging.debug("Added tiny-font paragraph break after list.")
-                elif element.name == 'h3':
-                    document.add_heading(element.get_text(strip=True), level=3)
-                elif element.name == 'div' and 'worksheet-section' in element.get('class', []):
-                     heading = element.find('h3')
-                     if heading:
-                          document.add_heading(heading.get_text(strip=True), level=3)
-                     # Process content within the div
-                     inner_content = element.find_all(['p', 'ol', 'ul'], recursive=False)
-                     for inner_element in inner_content:
-                          if inner_element.name == 'p':
-                               para = document.add_paragraph()
-                               add_runs_from_html_element(para, inner_element)
-                          elif inner_element.name in ['ol', 'ul']:
-                               # Attempt numbering reset with tiny font paragraph
-                               reset_para = document.add_paragraph()
-                               run = reset_para.add_run()
-                               run.font.size = Pt(1)
-                               logging.debug("Added tiny-font paragraph break before inner list.")
-                               # Process list items
-                               inner_list_items = inner_element.find_all('li', recursive=False)
-                               inner_style = 'List Number' if inner_element.name == 'ol' else 'List Bullet'
-                               for inner_li in inner_list_items:
-                                    para = document.add_paragraph(style=inner_style)
-                                    add_runs_from_html_element(para, inner_li)
-                elif element.name is None and element.string and element.string.strip():
-                    # Handle potential text nodes directly under body/soup root
-                    document.add_paragraph(element.string.strip())
-                # else: # Optionally log ignored top-level tags
-                #     logging.debug(f"Ignoring top-level tag: {element.name}")
+            if word_search_container:
+                # --- Word Search Specific Handling ---
+                processed_as_type = "WordSearch" # DEBUG Line 11
+                logging.debug("Item identified as Word Search.") # DEBUG Line 12
 
-            # Add separator between items
+                # Add Heading (Word Search)
+                heading_ws = word_search_container.find('h3')
+                if heading_ws: document.add_heading(heading_ws.get_text(strip=True), level=3)
+                else: document.add_heading("Word Search", level=3)
+                logging.debug("Added WS Heading") # DEBUG Line 13
+
+                # Generate and Add Grid Image
+                grid_table = word_search_container.find('table', class_='word-search-grid')
+                grid_list = []
+                if grid_table:
+                    for row in grid_table.find_all('tr'):
+                        grid_list.append([cell.get_text(strip=True) for cell in row.find_all('td')])
+                logging.debug(f"Extracted grid_list with {len(grid_list)} rows.") # DEBUG Line 14
+
+                if grid_list:
+                    grid_image = create_wordsearch_image(grid_list)
+                    if grid_image:
+                        img_buffer = io.BytesIO(); grid_image.save(img_buffer, format='PNG'); img_buffer.seek(0)
+                        try:
+                            document.add_picture(img_buffer, width=Inches(6.0))
+                            logging.debug("Added word search grid image.") # DEBUG Line 15
+                        except Exception as pic_e:
+                            logging.error(f"Failed to add picture: {pic_e}")
+                            document.add_paragraph("[Error adding grid image]", style='Comment')
+                    else:
+                        logging.warning("create_wordsearch_image returned None.") # DEBUG Line 16
+                        document.add_paragraph("[Error generating grid image]", style='Comment')
+                else:
+                     logging.warning("Word search grid table not found in HTML.") # DEBUG Line 17
+                     document.add_paragraph("[Word search grid table not found in HTML]", style='Comment')
+
+                # Add Word List section
+                all_headings = word_search_container.find_all('h3') # Find all h3s
+                if len(all_headings) > 1: # Check if second h3 exists (Word List heading)
+                    document.add_heading(all_headings[1].get_text(strip=True), level=3)
+                else:
+                     document.add_heading("Word List", level=3) # Fallback heading
+
+                word_list_ul = word_search_container.find('ul', class_='word-search-list')
+                words_to_find = [] # Create an empty list to store words
+                if word_list_ul:
+                    for li in word_list_ul.find_all('li'):
+                        word = li.get_text(strip=True)
+                        if word: # Make sure word is not empty
+                            words_to_find.append(word) # Add word to the list
+                    logging.debug(f"Extracted {len(words_to_find)} words for list.")
+                else:
+                    logging.warning("Word search word list UL element not found in HTML for export.")
+
+                # Check if we actually found any words
+                if words_to_find:
+                    # Join the list into a single string with "     " separator
+                    joined_words_string = "     ".join(words_to_find)
+                    # Add the joined string as a single paragraph
+                    document.add_paragraph(joined_words_string)
+                    logging.debug(f"Added joined word list paragraph: {joined_words_string[:100]}...")
+                else:
+                    # If the UL was missing or empty, add a placeholder comment
+                    document.add_paragraph("[Word list empty or not found in HTML]", style='Comment')
+
+                document.add_paragraph() # Space after word search item finished
+
+            else:
+                # --- Original/Generic Handling for OTHER item types ---
+                processed_as_type = "Generic" # DEBUG Line 21
+                logging.debug("Item identified as Generic type.") # DEBUG Line 22
+                content_elements = list(soup.find('body').find_all(True, recursive=False)) if soup.find('body') else list(soup.find_all(True, recursive=False))
+                logging.debug(f"Assigned content_elements. Length: {len(content_elements)}") # DEBUG Line 23
+
+                if not content_elements:
+                    plain_text = soup.get_text(strip=True)
+                    if plain_text:
+                         logging.debug("No elements found, adding plain text only.") # DEBUG Line 24
+                         document.add_paragraph(plain_text)
+                    else:
+                         logging.warning(f"Item ID {item.id} (Generic) has no content elements or text.") # DEBUG Line 25
+                else:
+                    logging.debug(f"Entering loop for {len(content_elements)} generic elements...") # DEBUG Line 26
+                    # Loop through content_elements HERE, INSIDE the else block
+                    for element_index, element in enumerate(content_elements): # DEBUG Added index
+                        logging.debug(f"  Processing generic element index {element_index}: Name={element.name}, Class={element.get('class',[])}") # DEBUG Line 27
+                        if element.name == 'p':
+                            para=document.add_paragraph(); add_runs_from_html_element(para, element)
+                        elif element.name in ['ol', 'ul']:
+                            style = 'List Number' if element.name == 'ol' else 'List Bullet'
+                            list_items_found = element.find_all('li', recursive=False) # DEBUG
+                            logging.debug(f"    Found list '{element.name}' with {len(list_items_found)} items.") # DEBUG Line 28
+                            for li in list_items_found:
+                                 para=document.add_paragraph(style=style); add_runs_from_html_element(para, li)
+                            # Attempt numbering reset with tiny font paragraph
+                            p=document.add_paragraph(); r=p.add_run(); r.font.size = Pt(1)
+                            logging.debug("    Added tiny-font paragraph break after list.") # DEBUG Line 29
+                        elif element.name == 'h3':
+                             document.add_heading(element.get_text(strip=True), level=3)
+                        elif element.name == 'div' and 'worksheet-section' in element.get('class', []):
+                             logging.debug("    Processing div.worksheet-section") # DEBUG Line 30
+                             if h:=element.find('h3'): document.add_heading(h.get_text(strip=True), level=3)
+                             for inner in element.find_all(['p','ol','ul'], recursive=False):
+                                  logging.debug(f"      Processing inner element: {inner.name}") # DEBUG Line 31
+                                  if inner.name == 'p':
+                                       para=document.add_paragraph(); add_runs_from_html_element(para, inner)
+                                  elif inner.name in ['ol', 'ul']:
+                                       p=document.add_paragraph(); r=p.add_run(); r.font.size = Pt(1) # Reset attempt
+                                       style = 'List Number' if inner.name == 'ol' else 'List Bullet'
+                                       inner_list_items_found = inner.find_all('li', recursive=False) # DEBUG
+                                       logging.debug(f"        Found inner list '{inner.name}' with {len(inner_list_items_found)} items.") # DEBUG Line 32
+                                       for li in inner_list_items_found:
+                                            para=document.add_paragraph(style=style); add_runs_from_html_element(para, li)
+                        elif element.name is None and element.string and element.string.strip():
+                             logging.debug(f"    Found text node: {element.string.strip()[:30]}...") # DEBUG Line 33
+                             document.add_paragraph(element.string.strip())
+                        else:
+                             logging.debug(f"    Ignoring generic element: Name={element.name}, Class={element.get('class',[])}") # DEBUG Line 34
+                    logging.debug("  Finished loop for generic elements.") # DEBUG Line 35
+            # --- End of the 'else' block for generic handling ---
+
+            logging.debug(f"End processing item index {item_index}. Identified as: {processed_as_type}") # DEBUG Line 36
+            # --- Add separator BETWEEN items ---
             if item_index < len(items) - 1:
+                logging.debug(f"Adding separator after item index {item_index}") # DEBUG Line 37
                 document.add_paragraph("_________________________")
                 document.add_paragraph()
+        # --- End of main item loop ---
+        logging.info("Finished item processing loop.") # DEBUG Line 38
 
         # --- Save and Return File ---
-        file_stream = io.BytesIO()
-        document.save(file_stream)
-        file_stream.seek(0)
+        logging.debug("Saving document to buffer...") # DEBUG Line 39
+        file_stream = io.BytesIO(); document.save(file_stream); file_stream.seek(0)
+        filename = f"{worksheet.title.replace(' ','_').lower() or 'worksheet'}.docx"
+        logging.info(f"Sending DOCX file: {filename}") # DEBUG Line 40
+        return send_file(file_stream, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
 
-        filename = f"{worksheet.title.replace(' ', '_').lower() or 'worksheet'}.docx"
-        logging.info(f"Sending DOCX file: {filename}")
-        return send_file(
-            file_stream,
-            as_attachment=True,
-            download_name=filename,
-            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        )
     except Exception as e:
-        logging.error(f"Error exporting DOCX for worksheet {worksheet_id}: {e}", exc_info=True)
+        # Log the error properly in a real app
+        logging.error(f"Error exporting DOCX for worksheet {worksheet_id}", exc_info=True) # DEBUG Line 41 (includes traceback)
+        # Return a user-friendly error page or message
         return f"Error exporting worksheet: {str(e)}", 500
 
+# --- Helper function add_runs_from_html_element remains the same ---
+# def add_runs_from_html_element(paragraph, element):
+#    ... (keep the previous version) ...500
+
 def add_runs_from_html_element(paragraph, element):
-    """
-    Recursively adds formatted runs to a python-docx paragraph based on basic HTML tags
-    found within a BeautifulSoup element. Handles <strong>, <em>, <b>, <i>, <br>,
-    gap-fill spans, and extracts text from other tags.
-    """
-    for content in element.contents: # Iterate through children (tags and text strings)
-        if isinstance(content, str): # Plain text string
-            text_content = content.replace('\xa0', ' ') # Replace non-breaking space
-            paragraph.add_run(text_content)
-        elif content.name in ['strong', 'b']:
-            run = paragraph.add_run(content.get_text(strip=True).replace('\xa0', ' '))
-            run.bold = True
-        elif content.name in ['em', 'i']:
-            run = paragraph.add_run(content.get_text(strip=True).replace('\xa0', ' '))
-            run.italic = True
-        elif content.name == 'span' and 'gap-placeholder' in content.get('class', []):
-            paragraph.add_run(" [__________] ") # Visual placeholder for gaps
-        elif content.name == 'br':
-             paragraph.add_run("\n") # Add newline for <br>
-        elif hasattr(content, 'name') and content.name: # It's another tag
-            # Recursively call this function for known inline tags if needed,
-            # or just extract text for block-level or unknown tags.
-            # For simplicity, just get text from any other tag for now.
-            text_content = content.get_text(strip=True).replace('\xa0', ' ')
-            if text_content:
-                paragraph.add_run(text_content)
-        # Add more tags here if needed (e.g., 'u' for underline)
-        # Ignore unknown tags for now or add their text content
-        # else:
-        #     paragraph.add_run(content.get_text()) # Add text from unknown tags?
+    """Adds formatted runs to a python-docx paragraph based on basic HTML tags."""
+    for content in element.contents:
+        if isinstance(content, str): paragraph.add_run(content.replace('\xa0', ' '))
+        elif content.name in ['strong', 'b']: r=paragraph.add_run(content.get_text(strip=True).replace('\xa0', ' ')); r.bold = True
+        elif content.name in ['em', 'i']: r=paragraph.add_run(content.get_text(strip=True).replace('\xa0', ' ')); r.italic = True
+        elif content.name == 'span' and 'gap-placeholder' in content.get('class', []): paragraph.add_run(" [__________] ")
+        elif content.name == 'br': paragraph.add_run("\n")
+
+@app.route('/')
+def serve_index():
+    """Serves the index.html file."""
+    logging.info("Serving index.html")
+    return send_from_directory('.', 'index.html')
+
 # --- Run the App ---
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5001)
+    # Note: debug=True is useful locally but should be False in production
+    app.run(host='127.0.0.1', port=5001, debug=True)
