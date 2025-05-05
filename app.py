@@ -18,6 +18,9 @@ from bs4 import BeautifulSoup
 import docx
 from docx.shared import Inches, Pt
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound # Keep for now
+import json
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 # Configure basic logging early
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(name)s:%(message)s')
@@ -46,20 +49,22 @@ db = SQLAlchemy(app)
 
 # Association Table: Links Worksheets and GeneratedItems, storing order
 worksheet_items_association = db.Table('worksheet_items_association',
-    db.Column('worksheet_id', db.Integer, db.ForeignKey('worksheets.id'), primary_key=True),
-    db.Column('generated_item_id', db.Integer, db.ForeignKey('generated_items.id'), primary_key=True), # Matches your column name
+    db.metadata,
+    db.Column('worksheet_id', db.Integer, db.ForeignKey('worksheet.id'), primary_key=True),
+    db.Column('generated_item_id', db.Integer, db.ForeignKey('generated_item.id'), primary_key=True), # Matches your column name
     db.Column('item_order', db.Integer, nullable=False)
 )
 
 # GeneratedItem Model
 class GeneratedItem(db.Model):
-    __tablename__ = 'generated_items'
+    __tablename__ = 'generated_item'
     id = db.Column(db.Integer, primary_key=True)
     item_type = db.Column(db.String(50), nullable=False)
     source_topic = db.Column(db.String(250), nullable=True)
     source_url = db.Column(db.String(500), nullable=True)
     grade_level = db.Column(db.String(50), nullable=False)
     content_html = db.Column(db.Text, nullable=False)
+    item_data_json = db.Column(db.Text, nullable=True)
     creation_date = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     last_modified_date = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -75,7 +80,7 @@ class GeneratedItem(db.Model):
 
 # Worksheet Model
 class Worksheet(db.Model):
-    __tablename__ = 'worksheets'
+    __tablename__ = 'worksheet'
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(250), nullable=False, default="Untitled Worksheet")
     creation_date = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
@@ -755,17 +760,128 @@ def generate_word_search_grid_route():
     except (ValueError, PuzzleGenerationError) as gen_err: logging.warning(f"Word search generation failed: {gen_err}"); return jsonify({'status': 'error', 'message': str(gen_err)}), 400
     except Exception as e: logging.error(f"Unexpected error in /generate_word_search_grid: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'An internal server error occurred creating the word search.'}), 500
 
+@app.route('/generate_keywords_definitions', methods=['POST'])
+def generate_keywords_definitions_route():
+    logging.info("Request received: /generate_keywords_definitions")
+    if not request.is_json:
+        logging.warning("Request aborted: Content-Type is not application/json.")
+        return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+
+    data = request.get_json()
+    if not data:
+        logging.warning("Request aborted: Empty JSON payload received.")
+        return jsonify({'status': 'error', 'message': 'Empty JSON payload received.'}), 400
+
+    topic = data.get('topic')
+    grade_level = data.get('grade_level')
+    try:
+        # Default to 10 keywords if not provided or invalid
+        num_keywords = int(data.get('num_keywords', 10))
+        if num_keywords <= 0:
+            num_keywords = 10
+            logging.warning("Invalid num_keywords <= 0 received, defaulting to 10.")
+    except (ValueError, TypeError):
+        num_keywords = 10
+        logging.warning("Invalid or missing num_keywords received, defaulting to 10.")
+
+
+    if not topic or not grade_level:
+        logging.warning("Request aborted: Missing 'topic' or 'grade_level' in JSON payload.")
+        return jsonify({'status': 'error', 'message': 'Missing "topic" or "grade_level".'}), 400
+
+    logging.debug(f"Parameters received: topic='{topic}', grade_level='{grade_level}', num_keywords={num_keywords}")
+
+    # --- Construct the AI Prompt ---
+    prompt = f"""Generate {num_keywords} unique keywords related to the topic "{topic}" suitable for grade level {grade_level}.
+For each keyword, provide a concise and clear definition appropriate for that grade level.
+Format the output STRICTLY as a JSON list of objects, where each object has a "keyword" key and a "definition" key.
+Do not include any other text, explanations, or markdown formatting before or after the JSON list. Just the raw JSON.
+
+Example format:
+[
+  {{"keyword": "Example Term 1", "definition": "This is the definition for term 1."}},
+  {{"keyword": "Example Term 2", "definition": "This is the definition for term 2."}}
+]
+
+Begin JSON list now:"""
+
+    try:
+        logging.info(f"Sending request to Anthropic API for keywords/definitions...")
+        message = client.messages.create(
+            model=ANTHROPIC_MODEL_NAME, # Use your configured model name variable
+            max_tokens=1500,  # Adjust as needed, maybe calculate based on num_keywords?
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+
+        # Extract the text content from the response
+        # Assuming the response structure gives text in message.content[0].text
+        if not message.content or not message.content[0].text:
+             raise ValueError("Received empty content from Anthropic API.")
+
+        ai_response_text = message.content[0].text.strip()
+        logging.debug(f"Raw AI response received:\n{ai_response_text}")
+
+        # --- Parse the JSON Response ---
+        # Sometimes the AI might still wrap the JSON in markdown backticks
+        if ai_response_text.startswith("```json"):
+            ai_response_text = ai_response_text[7:] # Remove ```json
+        if ai_response_text.endswith("```"):
+            ai_response_text = ai_response_text[:-3] # Remove ```
+        ai_response_text = ai_response_text.strip() # Clean whitespace again
+
+        try:
+            keyword_data = json.loads(ai_response_text)
+        except json.JSONDecodeError as json_err:
+            logging.error(f"Failed to parse JSON from AI response: {json_err}")
+            logging.error(f"Problematic AI response text: {ai_response_text}")
+            # Consider trying to extract JSON manually if needed, but often better to fail
+            return jsonify({'status': 'error', 'message': f'AI response format error (not valid JSON).'}), 500
+
+        # --- Basic Validation of Parsed Data ---
+        if not isinstance(keyword_data, list):
+            logging.error(f"AI response parsed, but it's not a list. Type: {type(keyword_data)}")
+            return jsonify({'status': 'error', 'message': 'AI response format error (expected a list).'}), 500
+
+        validated_data = []
+        for item in keyword_data:
+            if isinstance(item, dict) and 'keyword' in item and 'definition' in item:
+                # Basic cleaning
+                kw = str(item['keyword']).strip()
+                df = str(item['definition']).strip()
+                if kw and df: # Ensure they are not empty after stripping
+                     validated_data.append({'keyword': kw, 'definition': df})
+            else:
+                logging.warning(f"Skipping invalid item in AI response list: {item}")
+
+        if not validated_data:
+             logging.error("AI response parsed as list, but no valid keyword/definition pairs found.")
+             return jsonify({'status': 'error', 'message': 'AI returned no valid keyword/definition pairs.'}), 500
+
+        logging.info(f"Successfully generated and parsed {len(validated_data)} keywords/definitions.")
+        return jsonify({'status': 'success', 'keywords': validated_data})
+
+    except Exception as e:
+        # Catch errors from the API call itself or other unexpected issues
+        logging.error(f"Error during keywords/definitions generation: {e}", exc_info=True)
+        # Provide a generic error to the frontend
+        return jsonify({'status': 'error', 'message': 'An internal error occurred while generating keywords.'}), 500
+
 # --- Item/Worksheet Persistence Routes ---
 @app.route('/save_item', methods=['POST'])
 def save_item_route():
     logging.info("--- save_item route entered ---")
     if not request.is_json: logging.error("save_item: Request is not JSON"); return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
     data = request.get_json(); logging.debug(f"save_item: Received data keys: {list(data.keys())}")
-    item_type = data.get('item_type'); source_topic = data.get('source_topic'); source_url = data.get('source_url'); grade_level = data.get('grade_level'); content_html = data.get('content_html')
+    item_type = data.get('item_type'); source_topic = data.get('source_topic'); source_url = data.get('source_url'); grade_level = data.get('grade_level'); item_data_json = data.get('item_data_json', None); content_html = data.get('content_html')
     if not item_type or not grade_level or not content_html: logging.error(f"save_item: Missing required fields. Got type: {item_type}, grade: {grade_level}, content: {bool(content_html)}"); return jsonify({'status': 'error', 'message': 'Missing required fields: item_type, grade_level, content_html'}), 400
     logging.debug(f"save_item: Preparing to create item: type={item_type}, grade={grade_level}")
     try:
-        new_item = GeneratedItem(item_type=item_type, source_topic=source_topic, source_url=source_url, grade_level=grade_level, content_html=content_html)
+        new_item = GeneratedItem(item_type=item_type, source_topic=source_topic, source_url=source_url, grade_level=grade_level, item_data_json=item_data_json, content_html=content_html)
         logging.debug(f"save_item: GeneratedItem object CREATED: {new_item}")
         db.session.add(new_item); logging.debug("save_item: Added to session.")
         db.session.commit(); logging.info(f"save_item: Commit successful. ID assigned: {new_item.id}")
@@ -781,7 +897,7 @@ def get_item_route(item_id):
         if item is None: logging.warning(f"Item with ID {item_id} not found."); return jsonify({'status': 'error', 'message': 'Item not found in library.'}), 404
         logging.info(f"Found item: {item.item_type}")
         item_data = {'id': item.id, 'item_type': item.item_type, 'source_topic': item.source_topic, 'source_url': item.source_url,
-                       'grade_level': item.grade_level, 'content_html': item.content_html, 'creation_date': item.creation_date.isoformat(),
+                       'grade_level': item.grade_level, 'item_data_json': item.item_data_json, 'content_html': item.content_html, 'creation_date': item.creation_date.isoformat(),
                        'last_modified_date': item.last_modified_date.isoformat()}
         return jsonify({'status': 'success', 'item': item_data})
     except Exception as e: logging.error(f"Error retrieving item {item_id} from database: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Error retrieving item details.'}), 500
@@ -828,201 +944,437 @@ def load_worksheet_route(worksheet_id):
         logging.info(f"Returning {len(items_data)} items for Worksheet ID: {worksheet_id}")
         return jsonify({'status': 'success', 'worksheet_title': worksheet.title, 'items': items_data})
     except Exception as e: logging.error(f"Error retrieving worksheet {worksheet_id} from database: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Error retrieving worksheet details.'}), 500
+@app.route('/generate_similar_written_questions', methods=['POST'])
+def generate_similar_written_questions_route():
+    logging.info("Request received: /generate_similar_written_questions")
+    if not request.is_json:
+        logging.warning("Request aborted: Content-Type is not application/json.")
+        return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
 
+    data = request.get_json()
+    if not data:
+        logging.warning("Request aborted: Empty JSON payload received.")
+        return jsonify({'status': 'error', 'message': 'Empty JSON payload received.'}), 400
+
+    example_question = data.get('example_question')
+    grade_level = data.get('grade_level') # Might be "Not Specified"
+    try:
+        num_questions = int(data.get('num_questions', 3))
+        if num_questions <= 0:
+            num_questions = 3
+            logging.warning("Invalid num_questions <= 0 received, defaulting to 3.")
+    except (ValueError, TypeError):
+        num_questions = 3
+        logging.warning("Invalid or missing num_questions received, defaulting to 3.")
+
+    if not example_question:
+        logging.warning("Request aborted: Missing 'example_question' in JSON payload.")
+        return jsonify({'status': 'error', 'message': 'Missing "example_question".'}), 400
+
+    # Use grade level if provided, otherwise let AI infer
+    grade_level_text = f"potentially intended for grade level '{grade_level}'" if grade_level and grade_level != "Not Specified" else "with an unspecified grade level"
+
+    logging.debug(f"Parameters: num_questions={num_questions}, grade_level='{grade_level}', example='{example_question[:100]}...'")
+
+    # --- Construct the AI Prompt ---
+    prompt = f"""You are an expert assessment designer tasked with creating question variations.
+Analyze the following example question, {grade_level_text}:
+
+--- Example Question ---
+{example_question}
+--- End Example Question ---
+
+First, identify and concisely describe the primary skill(s) being assessed by this question.
+Second, generate {num_questions} new, distinct questions that assess the *exact same skill(s)* you identified. Ensure these new questions are appropriate for the specified grade level (or maintain the implied level of the example), keep a similar difficulty, but use different scenarios, contexts, or specific details. Avoid simple rephrasing of the example.
+
+Format your response strictly as a JSON object containing two keys:
+1. "skills_identified": A string describing the core skill(s) tested (keep this brief, maybe 1-2 sentences).
+2. "similar_questions": A JSON list containing exactly {num_questions} strings, where each string is one of the new questions.
+
+Do not include any explanations or text outside the JSON object.
+
+Example JSON Output Format:
+{{
+  "skills_identified": "Applying the definition of photosynthesis to identify necessary components.",
+  "similar_questions": [
+    "Besides sunlight, what is one essential reactant that plants need for photosynthesis?",
+    "Which part of a plant cell is primarily responsible for carrying out photosynthesis?",
+    "If a plant is kept in complete darkness but given water and carbon dioxide, can it perform photosynthesis? Explain why or why not."
+  ]
+}}
+
+Begin JSON object now:"""
+
+    try:
+        logging.info(f"Sending request to Anthropic API for similar written questions...")
+        message = client.messages.create(
+            model=ANTHROPIC_MODEL_NAME,
+            max_tokens=1500, # Adjust as needed
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        if not message.content or not message.content[0].text:
+             raise ValueError("Received empty content from Anthropic API.")
+
+        ai_response_text = message.content[0].text.strip()
+        logging.debug(f"Raw AI response received:\n{ai_response_text}")
+
+        # Clean potential markdown backticks
+        if ai_response_text.startswith("```json"):
+            ai_response_text = ai_response_text[7:]
+        if ai_response_text.endswith("```"):
+            ai_response_text = ai_response_text[:-3]
+        ai_response_text = ai_response_text.strip()
+
+        try:
+            parsed_data = json.loads(ai_response_text)
+        except json.JSONDecodeError as json_err:
+            logging.error(f"Failed to parse JSON from AI response: {json_err}")
+            logging.error(f"Problematic AI response text for similar written q: {ai_response_text}")
+            return jsonify({'status': 'error', 'message': 'AI response format error (not valid JSON).'}), 500
+
+        # Validate structure
+        if not isinstance(parsed_data, dict):
+             logging.error(f"Parsed data is not a dict: {type(parsed_data)}")
+             return jsonify({'status': 'error', 'message': 'AI response format error (expected JSON object).'}), 500
+
+        skills = parsed_data.get("skills_identified")
+        questions = parsed_data.get("similar_questions")
+
+        if not isinstance(skills, str) or not isinstance(questions, list):
+             logging.error(f"Missing/invalid keys in parsed JSON. Skills type: {type(skills)}, Questions type: {type(questions)}")
+             return jsonify({'status': 'error', 'message': 'AI response format error (missing/invalid keys).'}), 500
+
+        # Optional: Validate number of questions returned matches request?
+        # if len(questions) != num_questions:
+        #    logging.warning(f"AI returned {len(questions)} questions, expected {num_questions}")
+
+        validated_questions = [str(q).strip() for q in questions if isinstance(q, str) and str(q).strip()]
+
+        logging.info(f"Successfully generated {len(validated_questions)} similar written questions.")
+        # Return the whole parsed object nested under 'data'
+        return jsonify({
+            'status': 'success',
+            'data': {
+                 'skills_identified': skills.strip(),
+                 'similar_questions': validated_questions
+                 }
+            })
+
+    except Exception as e:
+        logging.error(f"Error during similar written questions generation: {e}", exc_info=True)
+        return jsonify({'status': 'error', 'message': 'An internal error occurred while generating questions.'}), 500
 # --- Export and Frontend Routes ---
 @app.route('/export/docx/<int:worksheet_id>')
 def export_worksheet_docx(worksheet_id):
     """Exports a specific worksheet as a DOCX file."""
-    logging.info(f"Request: /export/docx/{worksheet_id}") # DEBUG Line 1
+    logging.info(f"Request: /export/docx/{worksheet_id}")
     try:
+        # Use eager loading to get items efficiently if possible, or default relationship loading
+        # worksheet = Worksheet.query.options(selectinload(Worksheet.items)).get_or_404(worksheet_id) # More advanced
         worksheet = Worksheet.query.get_or_404(worksheet_id)
-        items = worksheet.items # Ordered based on relationship definition
-        logging.info(f"Found worksheet '{worksheet.title}' with {len(items)} items.") # DEBUG Line 2
+        # Access items (SQLAlchemy should handle the ordering defined in the relationship)
+        items = worksheet.items
+        logging.info(f"Found worksheet '{worksheet.title}' with {len(items)} items.")
 
         document = docx.Document()
-        logging.debug("Initialized docx Document.") # DEBUG Line 3
+        logging.debug("Initialized docx Document.")
 
-        # Apply Document Formatting
+        # --- Apply Document Formatting ---
         target_font='Century Gothic'
         try:
             normal_style = document.styles['Normal']
             normal_style.font.name = target_font
-            logging.info(f"Set Normal font to {target_font}") # DEBUG Line 4
+            normal_style.paragraph_format.space_after = Pt(6) # Add some space after paragraphs
+            logging.info(f"Set Normal font to {target_font} and paragraph spacing.")
         except Exception as font_e:
-            logging.warning(f"Could not set default font to {target_font}: {font_e}")
+            logging.warning(f"Could not set default font/style: {font_e}")
 
         try:
             h3_style = document.styles['Heading 3']
             h3_style.font.name = target_font
-            logging.info(f"Set H3 font to {target_font}") # DEBUG Line 5
+            h3_style.paragraph_format.space_before = Pt(12)
+            h3_style.paragraph_format.space_after = Pt(6)
+            logging.info(f"Set H3 font to {target_font} and spacing.")
         except Exception as style_e:
             logging.warning(f"Could not modify Heading 3 style: {style_e}")
 
-        try:
+        try: # Set Margins
             section = document.sections[0]
             section.left_margin=Inches(0.5); section.right_margin=Inches(0.5)
             section.top_margin=Inches(0.5); section.bottom_margin=Inches(0.5)
-            logging.info("Set narrow margins.") # DEBUG Line 6
+            logging.info("Set narrow margins.")
         except Exception as margin_e:
             logging.warning(f"Could not set margins: {margin_e}")
 
-        # Add Worksheet Title
+        # --- Add Worksheet Title ---
         document.add_heading(worksheet.title, level=1)
         document.add_paragraph() # Space after title
-        logging.debug(f"Added worksheet title: {worksheet.title}") # DEBUG Line 7
+        logging.debug(f"Added worksheet title: {worksheet.title}")
 
         # --- Add Worksheet Items Loop ---
-        logging.info("Starting item processing loop...") # DEBUG Line 8
+        logging.info("Starting item processing loop...")
         for item_index, item in enumerate(items):
-            logging.debug(f"--- Processing item index: {item_index}, ID: {item.id}, Type: {item.item_type} ---") # DEBUG Line 9
-            soup = BeautifulSoup(item.content_html, 'lxml')
+            logging.debug(f"--- Processing item index: {item_index}, ID: {item.id}, Type: {item.item_type} ---")
+            soup = BeautifulSoup(item.content_html, 'lxml') # Use lxml for better parsing
+            processed_as_type = "Unknown" # Initialize tracker
+
+            # Check for specific structures first
             word_search_container = soup.find('div', class_='word-search-container')
 
-            # Initialize variable for tracing
-            processed_as_type = "Unknown" # DEBUG Line 10
-
+            # --- Condition 1: Word Search ---
             if word_search_container:
-                # --- Word Search Specific Handling ---
-                processed_as_type = "WordSearch" # DEBUG Line 11
-                logging.debug("Item identified as Word Search.") # DEBUG Line 12
+                processed_as_type = "WordSearch"
+                logging.debug("Item identified as Word Search.")
+                try:
+                    # Add Heading (Word Search)
+                    heading_ws = word_search_container.find('h3') # Find first h3
+                    document.add_heading(heading_ws.get_text(strip=True) if heading_ws else "Word Search", level=3)
+                    logging.debug("Added WS Heading")
 
-                # Add Heading (Word Search)
-                heading_ws = word_search_container.find('h3')
-                if heading_ws: document.add_heading(heading_ws.get_text(strip=True), level=3)
-                else: document.add_heading("Word Search", level=3)
-                logging.debug("Added WS Heading") # DEBUG Line 13
+                    # Extract grid data
+                    grid_table = word_search_container.find('table', class_='word-search-grid')
+                    grid_list = []
+                    if grid_table:
+                        for row in grid_table.find_all('tr'):
+                            grid_list.append([cell.get_text(strip=True) for cell in row.find_all('td')])
+                    logging.debug(f"Extracted grid_list with {len(grid_list)} rows.")
 
-                # Generate and Add Grid Image
-                grid_table = word_search_container.find('table', class_='word-search-grid')
-                grid_list = []
-                if grid_table:
-                    for row in grid_table.find_all('tr'):
-                        grid_list.append([cell.get_text(strip=True) for cell in row.find_all('td')])
-                logging.debug(f"Extracted grid_list with {len(grid_list)} rows.") # DEBUG Line 14
+                    # Add Grid Image
+                    if grid_list:
+                        grid_image = create_wordsearch_image(grid_list) # Assumes this function exists
+                        if grid_image:
+                            img_buffer = io.BytesIO(); grid_image.save(img_buffer, format='PNG'); img_buffer.seek(0)
+                            try: document.add_picture(img_buffer, width=Inches(6.0))
+                            except Exception as pic_e: logging.error(f"Failed to add picture: {pic_e}"); document.add_paragraph("[Error adding grid image]", style='Comment')
+                            logging.debug("Added word search grid image (or error placeholder).")
+                        else: logging.warning("create_wordsearch_image returned None."); document.add_paragraph("[Error generating grid image]", style='Comment')
+                    else: logging.warning("Word search grid table not found in HTML."); document.add_paragraph("[Word search grid table not found in HTML]", style='Comment')
 
-                if grid_list:
-                    grid_image = create_wordsearch_image(grid_list)
-                    if grid_image:
-                        img_buffer = io.BytesIO(); grid_image.save(img_buffer, format='PNG'); img_buffer.seek(0)
-                        try:
-                            document.add_picture(img_buffer, width=Inches(6.0))
-                            logging.debug("Added word search grid image.") # DEBUG Line 15
-                        except Exception as pic_e:
-                            logging.error(f"Failed to add picture: {pic_e}")
-                            document.add_paragraph("[Error adding grid image]", style='Comment')
-                    else:
-                        logging.warning("create_wordsearch_image returned None.") # DEBUG Line 16
-                        document.add_paragraph("[Error generating grid image]", style='Comment')
-                else:
-                     logging.warning("Word search grid table not found in HTML.") # DEBUG Line 17
-                     document.add_paragraph("[Word search grid table not found in HTML]", style='Comment')
+                    # Add Word List Heading
+                    all_headings = word_search_container.find_all('h3')
+                    document.add_heading(all_headings[1].get_text(strip=True) if len(all_headings) > 1 else "Word List", level=3)
 
-                # Add Word List section
-                all_headings = word_search_container.find_all('h3') # Find all h3s
-                if len(all_headings) > 1: # Check if second h3 exists (Word List heading)
-                    document.add_heading(all_headings[1].get_text(strip=True), level=3)
-                else:
-                     document.add_heading("Word List", level=3) # Fallback heading
-
-                word_list_ul = word_search_container.find('ul', class_='word-search-list')
-                words_to_find = [] # Create an empty list to store words
-                if word_list_ul:
-                    for li in word_list_ul.find_all('li'):
-                        word = li.get_text(strip=True)
-                        if word: # Make sure word is not empty
-                            words_to_find.append(word) # Add word to the list
+                    # Add Word List Paragraph
+                    word_list_ul = word_search_container.find('ul', class_='word-search-list')
+                    words_to_find = [li.get_text(strip=True) for li in word_list_ul.find_all('li')] if word_list_ul else []
+                    words_to_find = [word for word in words_to_find if word] # Filter empty strings
                     logging.debug(f"Extracted {len(words_to_find)} words for list.")
-                else:
-                    logging.warning("Word search word list UL element not found in HTML for export.")
 
-                # Check if we actually found any words
-                if words_to_find:
-                    # Join the list into a single string with "     " separator
-                    joined_words_string = "     ".join(words_to_find)
-                    # Add the joined string as a single paragraph
-                    document.add_paragraph(joined_words_string)
-                    logging.debug(f"Added joined word list paragraph: {joined_words_string[:100]}...")
-                else:
-                    # If the UL was missing or empty, add a placeholder comment
-                    document.add_paragraph("[Word list empty or not found in HTML]", style='Comment')
+                    if words_to_find:
+                        joined_words_string = "     ".join(words_to_find)
+                        document.add_paragraph(joined_words_string)
+                        logging.debug(f"Added joined word list paragraph.")
+                    else: document.add_paragraph("[Word list empty or not found in HTML]", style='Comment')
 
-                document.add_paragraph() # Space after word search item finished
+                    document.add_paragraph() # Space after word search item
+                except Exception as ws_err:
+                    logging.error(f"Error processing WordSearch item {item.id}: {ws_err}", exc_info=True)
+                    document.add_paragraph(f"[Error processing Word Search item {item.id}]", style='Comment')
 
+            # --- Condition 2: Keywords Table ---
+            elif item.item_type.startswith('keywords-'):
+                processed_as_type = "KeywordsTable"
+                logging.debug(f"Processing keywords item {item.id} (Type: {item.item_type}) for DOCX.")
+                try:
+                    soup_kw = BeautifulSoup(item.content_html, 'lxml') # Re-parse just in case soup object was modified
+                    html_table = soup_kw.find('table', class_='keywords-table')
+
+                    if not html_table: raise ValueError("Could not find 'table.keywords-table' in HTML")
+
+                    rows = html_table.find_all('tr')
+                    if not rows: raise ValueError("Keywords table found but contained no rows.")
+
+                    header_cells = rows[0].find_all(['th', 'td'])
+                    num_cols = len(header_cells)
+                    if num_cols <= 0: raise ValueError("Keywords table found, but header row had no columns.")
+
+                    data_rows = rows[1:]
+                    num_data_rows = len(data_rows)
+
+                    logging.debug(f"Creating DOCX table with {num_data_rows + 1} rows and {num_cols} cols.")
+                    docx_table = document.add_table(rows=num_data_rows + 1, cols=num_cols)
+                    docx_table.style = 'Table Grid'
+
+                    # Populate Header
+                    for j, cell in enumerate(header_cells):
+                         if j < num_cols:
+                            header_text = ' '.join(cell.get_text(strip=True).split())
+                            hdr_cell = docx_table.cell(0, j)
+                            hdr_cell.text = header_text
+                            if hdr_cell.paragraphs and hdr_cell.paragraphs[0].runs: hdr_cell.paragraphs[0].runs[0].font.bold = True
+                            elif hdr_cell.paragraphs: hdr_cell.paragraphs[0].add_run().font.bold = True
+
+                    # Populate Data
+                    for i, html_row in enumerate(data_rows):
+                        cells = html_row.find_all('td')
+                        for j, cell in enumerate(cells):
+                             if j < num_cols:
+                                cell_text = ' '.join(cell.get_text(strip=True).split())
+                                docx_table.cell(i + 1, j).text = cell_text if cell_text else ""
+
+                    # Modify Borders for Matching Type
+                    if item.item_type == 'keywords-matching' and num_cols == 3:
+                        logging.debug(f"Modifying middle column borders for item {item.id}.")
+                        middle_col_index = 1
+                        total_rows = num_data_rows + 1
+                        for i in range(total_rows):
+                            try:
+                                cell = docx_table.cell(i, middle_col_index)
+                                tcPr = cell._tc.get_or_add_tcPr()
+                                tcBorders = tcPr.first_child_found_in("w:tcBorders")
+                                if tcBorders is None: tcBorders = OxmlElement("w:tcBorders"); tcPr.append(tcBorders)
+                                top_border = OxmlElement('w:top'); top_border.set(qn('w:val'), 'nil'); tcBorders.append(top_border)
+                                bottom_border = OxmlElement('w:bottom'); bottom_border.set(qn('w:val'), 'nil'); tcBorders.append(bottom_border)
+                            except IndexError: logging.warning(f"IndexError accessing cell ({i},{middle_col_index}) modifying borders.")
+                            except Exception as border_err: logging.error(f"Error modifying borders cell({i},{middle_col_index}): {border_err}")
+                        logging.debug(f"Finished border removal attempt for item {item.id}.")
+                    elif item.item_type == 'keywords-matching' and num_cols != 3:
+                         logging.warning(f"Keyword matching item {item.id} did not have 3 columns. Borders not modified.")
+
+                    document.add_paragraph() # Space after table
+                    logging.debug(f"Successfully added keywords table for item {item.id} to DOCX.")
+
+                except ValueError as ve: # Catch specific parsing value errors
+                     logging.warning(f"ValueError processing keywords table for item {item.id}: {ve}")
+                     document.add_paragraph(f"[Keyword table content invalid for item {item.id}: {ve}]", style='Comment')
+                except Exception as parse_err: # Catch other unexpected errors
+                    logging.error(f"Error processing keywords table item {item.id}: {parse_err}", exc_info=True)
+                    document.add_paragraph(f"[Error processing keyword table for item {item.id}]", style='Comment')
+
+            # --- Condition 3: Similar Written Questions ---
+            elif item.item_type == 'similarWrittenQ':
+                processed_as_type = "SimilarWrittenQ"
+                logging.debug(f"Processing similarWrittenQ item {item.id} for DOCX.")
+                skills = "Skills not specified."
+                questions = []
+                try:
+                    if item.item_data_json:
+                        parsed_data = json.loads(item.item_data_json)
+                        if isinstance(parsed_data, dict):
+                            skills = parsed_data.get('skills_identified', skills).strip()
+                            questions_raw = parsed_data.get('similar_questions', [])
+                            if isinstance(questions_raw, list):
+                                questions = [str(q).strip() for q in questions_raw if str(q).strip()]
+                            else: logging.warning(f"similar_questions in JSON for item {item.id} was not a list.")
+                        else: logging.warning(f"Parsed item_data_json for item {item.id} was not a dict.")
+                    else: logging.warning(f"item_data_json not found for similarWrittenQ item {item.id}.")
+
+                    # Add content to DOCX
+                    document.add_heading("Skills Tested", level=3)
+                    document.add_paragraph(skills)
+                    document.add_paragraph()
+
+                    document.add_heading("Generated Questions", level=3)
+                    if questions:
+                        for q_text in questions:
+                            document.add_paragraph(q_text, style='List Number')
+                        p=document.add_paragraph(); r=p.add_run(); r.font.size = Pt(1) # Reset numbering
+                    else: document.add_paragraph("[No similar questions found in saved data]", style='Comment')
+
+                    document.add_paragraph() # Spacing after section
+                    logging.debug(f"Successfully added SimilarWrittenQ item {item.id} to DOCX.")
+
+                except json.JSONDecodeError as json_err:
+                     logging.error(f"Failed to parse item_data_json for similarWrittenQ item {item.id}: {json_err}")
+                     document.add_paragraph(f"[Error reading saved data for Similar Written Questions item {item.id}]", style='Comment')
+                except Exception as export_err:
+                    logging.error(f"Error adding similarWrittenQ item {item.id} to DOCX: {export_err}", exc_info=True)
+                    document.add_paragraph(f"[Error processing Similar Written Questions item {item.id}]", style='Comment')
+
+            # --- Condition 4: Generic/Fallback Handling ---
             else:
-                # --- Original/Generic Handling for OTHER item types ---
-                processed_as_type = "Generic" # DEBUG Line 21
-                logging.debug("Item identified as Generic type.") # DEBUG Line 22
-                content_elements = list(soup.find('body').find_all(True, recursive=False)) if soup.find('body') else list(soup.find_all(True, recursive=False))
-                logging.debug(f"Assigned content_elements. Length: {len(content_elements)}") # DEBUG Line 23
+                processed_as_type = "Generic"
+                logging.debug("Item identified as Generic type. Parsing content_html.")
+                try:
+                    # Find top-level elements, excluding head/body/html if present
+                    body = soup.find('body')
+                    if body: content_elements = body.find_all(True, recursive=False)
+                    else: content_elements = soup.find_all(True, recursive=False)
 
-                if not content_elements:
-                    plain_text = soup.get_text(strip=True)
-                    if plain_text:
-                         logging.debug("No elements found, adding plain text only.") # DEBUG Line 24
-                         document.add_paragraph(plain_text)
+                    # If still no elements, try getting text
+                    if not content_elements:
+                        plain_text = soup.get_text(strip=True)
+                        if plain_text:
+                             logging.debug("No elements found, adding plain text only.")
+                             document.add_paragraph(plain_text)
+                        else: logging.warning(f"Item ID {item.id} (Generic) has no content elements or text.")
                     else:
-                         logging.warning(f"Item ID {item.id} (Generic) has no content elements or text.") # DEBUG Line 25
-                else:
-                    logging.debug(f"Entering loop for {len(content_elements)} generic elements...") # DEBUG Line 26
-                    # Loop through content_elements HERE, INSIDE the else block
-                    for element_index, element in enumerate(content_elements): # DEBUG Added index
-                        logging.debug(f"  Processing generic element index {element_index}: Name={element.name}, Class={element.get('class',[])}") # DEBUG Line 27
-                        if element.name == 'p':
-                            para=document.add_paragraph(); add_runs_from_html_element(para, element)
-                        elif element.name in ['ol', 'ul']:
-                            style = 'List Number' if element.name == 'ol' else 'List Bullet'
-                            list_items_found = element.find_all('li', recursive=False) # DEBUG
-                            logging.debug(f"    Found list '{element.name}' with {len(list_items_found)} items.") # DEBUG Line 28
-                            for li in list_items_found:
-                                 para=document.add_paragraph(style=style); add_runs_from_html_element(para, li)
-                            # Attempt numbering reset with tiny font paragraph
-                            p=document.add_paragraph(); r=p.add_run(); r.font.size = Pt(1)
-                            logging.debug("    Added tiny-font paragraph break after list.") # DEBUG Line 29
-                        elif element.name == 'h3':
-                             document.add_heading(element.get_text(strip=True), level=3)
-                        elif element.name == 'div' and 'worksheet-section' in element.get('class', []):
-                             logging.debug("    Processing div.worksheet-section") # DEBUG Line 30
-                             if h:=element.find('h3'): document.add_heading(h.get_text(strip=True), level=3)
-                             for inner in element.find_all(['p','ol','ul'], recursive=False):
-                                  logging.debug(f"      Processing inner element: {inner.name}") # DEBUG Line 31
-                                  if inner.name == 'p':
-                                       para=document.add_paragraph(); add_runs_from_html_element(para, inner)
-                                  elif inner.name in ['ol', 'ul']:
-                                       p=document.add_paragraph(); r=p.add_run(); r.font.size = Pt(1) # Reset attempt
-                                       style = 'List Number' if inner.name == 'ol' else 'List Bullet'
-                                       inner_list_items_found = inner.find_all('li', recursive=False) # DEBUG
-                                       logging.debug(f"        Found inner list '{inner.name}' with {len(inner_list_items_found)} items.") # DEBUG Line 32
-                                       for li in inner_list_items_found:
-                                            para=document.add_paragraph(style=style); add_runs_from_html_element(para, li)
-                        elif element.name is None and element.string and element.string.strip():
-                             logging.debug(f"    Found text node: {element.string.strip()[:30]}...") # DEBUG Line 33
-                             document.add_paragraph(element.string.strip())
-                        else:
-                             logging.debug(f"    Ignoring generic element: Name={element.name}, Class={element.get('class',[])}") # DEBUG Line 34
-                    logging.debug("  Finished loop for generic elements.") # DEBUG Line 35
-            # --- End of the 'else' block for generic handling ---
+                        logging.debug(f"Entering loop for {len(content_elements)} generic elements...")
+                        for element in content_elements:
+                            logging.debug(f"  Processing generic element: Name={element.name}, Class={element.get('class',[])}")
+                            if element.name == 'p':
+                                para=document.add_paragraph(); add_runs_from_html_element(para, element)
+                            elif element.name in ['ol', 'ul']:
+                                style = 'List Number' if element.name == 'ol' else 'List Bullet'
+                                list_items = element.find_all('li', recursive=False)
+                                logging.debug(f"    Found list '{element.name}' with {len(list_items)} items.")
+                                for li in list_items:
+                                     para=document.add_paragraph(style=style); add_runs_from_html_element(para, li)
+                                # Attempt numbering reset
+                                p=document.add_paragraph(); r=p.add_run(); r.font.size = Pt(1)
+                                logging.debug("    Added tiny-font paragraph break after list.")
+                            elif element.name == 'h3':
+                                 document.add_heading(element.get_text(strip=True), level=3)
+                            elif element.name == 'div' and 'worksheet-section' in element.get('class', []):
+                                 logging.debug("    Processing div.worksheet-section")
+                                 if h:=element.find('h3'): document.add_heading(h.get_text(strip=True), level=3)
+                                 # Process inner elements within the section div
+                                 for inner in element.find_all(['p','ol','ul'], recursive=False):
+                                      logging.debug(f"      Processing inner element: {inner.name}")
+                                      if inner.name == 'p': para=document.add_paragraph(); add_runs_from_html_element(para, inner)
+                                      elif inner.name in ['ol', 'ul']:
+                                           p=document.add_paragraph(); r=p.add_run(); r.font.size = Pt(1) # Reset attempt
+                                           style = 'List Number' if inner.name == 'ol' else 'List Bullet'
+                                           inner_list_items = inner.find_all('li', recursive=False)
+                                           logging.debug(f"        Found inner list '{inner.name}' with {len(inner_list_items)} items.")
+                                           for li in inner_list_items: para=document.add_paragraph(style=style); add_runs_from_html_element(para, li)
+                            # Handle potential top-level text nodes if needed (less common)
+                            # elif element.name is None and element.string and element.string.strip():
+                            #     document.add_paragraph(element.string.strip())
+                            else:
+                                 logging.debug(f"    Ignoring generic element: Name={element.name}")
+                        logging.debug("  Finished loop for generic elements.")
+                except Exception as generic_err:
+                     logging.error(f"Error processing generic item {item.id}: {generic_err}", exc_info=True)
+                     document.add_paragraph(f"[Error processing content for item {item.id}]", style='Comment')
 
-            logging.debug(f"End processing item index {item_index}. Identified as: {processed_as_type}") # DEBUG Line 36
+            # --- End of the main if/elif/else block for item types ---
+            logging.debug(f"End processing item index {item_index}. Identified as: {processed_as_type}")
+
             # --- Add separator BETWEEN items ---
             if item_index < len(items) - 1:
-                logging.debug(f"Adding separator after item index {item_index}") # DEBUG Line 37
-                document.add_paragraph("_________________________")
+                logging.debug(f"Adding separator after item index {item_index}")
+                # Use a more subtle separator? Like a paragraph break or horizontal rule if supported well
+                document.add_paragraph().add_run().add_break(docx.enum.text.WD_BREAK.PAGE) # Or just PAGE break
+                # document.add_paragraph("---") # Simple separator
                 document.add_paragraph()
+
         # --- End of main item loop ---
-        logging.info("Finished item processing loop.") # DEBUG Line 38
+        logging.info("Finished item processing loop.")
 
         # --- Save and Return File ---
-        logging.debug("Saving document to buffer...") # DEBUG Line 39
-        file_stream = io.BytesIO(); document.save(file_stream); file_stream.seek(0)
-        filename = f"{worksheet.title.replace(' ','_').lower() or 'worksheet'}.docx"
-        logging.info(f"Sending DOCX file: {filename}") # DEBUG Line 40
-        return send_file(file_stream, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+        logging.debug("Saving document to buffer...")
+        file_stream = io.BytesIO()
+        document.save(file_stream)
+        file_stream.seek(0)
+        # Sanitize title for filename
+        safe_title = re.sub(r'[\\/*?:"<>|]', "", worksheet.title) # Remove invalid chars
+        safe_title = re.sub(r'\s+', '_', safe_title) # Replace whitespace with underscore
+        filename = f"{safe_title.lower() or 'worksheet'}.docx"
+        logging.info(f"Sending DOCX file: {filename}")
+        return send_file(
+            file_stream,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        )
 
     except Exception as e:
-        # Log the error properly in a real app
-        logging.error(f"Error exporting DOCX for worksheet {worksheet_id}", exc_info=True) # DEBUG Line 41 (includes traceback)
-        # Return a user-friendly error page or message
-        return f"Error exporting worksheet: {str(e)}", 500
+        logging.error(f"CRITICAL Error exporting DOCX for worksheet {worksheet_id}", exc_info=True)
+        # Return a user-friendly error page or message in production
+        # For debugging, returning the error might be useful
+        return f"Error exporting worksheet: {str(e)}<br><pre>{traceback.format_exc()}</pre>", 500
 
 # --- Helper function add_runs_from_html_element remains the same ---
 # def add_runs_from_html_element(paragraph, element):
