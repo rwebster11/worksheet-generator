@@ -21,7 +21,11 @@ from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, No
 import json
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-
+import uuid # For generating unique filenames
+from werkzeug.utils import secure_filename # For basic filename security (optional but good practice)
+from PIL import Image, ImageDraw, ImageFont # For DOCX image generation
+import io # For handling image data in memory
+import json
 # Configure basic logging early
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(name)s:%(message)s')
 
@@ -41,7 +45,16 @@ db_path = os.path.join(basedir, 'worksheet_library.db')
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # --- End Database Configuration ---
-
+# --- Upload Folder Configuration --- ADD THIS SECTION ---
+UPLOAD_FOLDER = os.path.join(basedir, 'static', 'uploads')
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+    logging.info(f"Created upload folder at: {UPLOAD_FOLDER}")
+else:
+    logging.info(f"Upload folder exists at: {UPLOAD_FOLDER}")
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024 # Example: 16MB upload limit
+# --- End Upload Folder Configuration ---
 # Initialize the SQLAlchemy extension
 db = SQLAlchemy(app)
 
@@ -493,52 +506,76 @@ def generate_wordsearch_grid(wordlist, nrows, ncols, allow_backwards_words=True,
             return grid, placed_words
     raise PuzzleGenerationError(f"Failed to place all words after {attempts} attempts.")
 # --- End of Word Search Generation Logic ---
-def create_wordsearch_image(grid_list, cell_size=30, font_size=18, font_path=None):
-    """Creates a PIL Image object of the word search grid."""
+def create_wordsearch_image(grid_list, cell_size=30, font_size=18, font_path=None, grid_line_padding=1):
+    """Creates a PIL Image object of the word search grid with complete borders."""
     if not grid_list or not grid_list[0]:
-        return None # Cannot generate image from empty grid
+        logging.warning("create_wordsearch_image: Empty grid_list provided.")
+        return None
 
     nrows = len(grid_list)
     ncols = len(grid_list[0])
-    img_width = ncols * cell_size
-    img_height = nrows * cell_size
+    
+    # Calculate actual grid dimensions
+    grid_actual_width = ncols * cell_size
+    grid_actual_height = nrows * cell_size
 
-    # Create white background image
+    # Image canvas size includes padding for borders
+    img_width = grid_actual_width + (2 * grid_line_padding)
+    img_height = grid_actual_height + (2 * grid_line_padding)
+
     image = Image.new('RGB', (img_width, img_height), 'white')
     draw = ImageDraw.Draw(image)
 
-    # Try to load a font (adjust path if needed, or handle fallback)
     try:
-        # On Linux servers, common paths might be different.
-        # A basic sans-serif font might be more reliable if Century Gothic isn't installed server-side.
-        # Example paths (check your system):
-        # font_path_try = font_path or "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf" # Common on Linux
-        font_path_try = font_path or "arial.ttf" # Common on Windows, might work locally
-        font = ImageFont.truetype(font_path_try, font_size)
+        font_to_use = ImageFont.truetype(font_path or "arial.ttf", font_size)
     except IOError:
-        logging.warning(f"Font file not found at {font_path_try}. Using default PIL font.")
-        font = ImageFont.load_default() # Fallback font
+        logging.warning(f"Word search font not found at '{font_path or "arial.ttf"}'. Using default.")
+        font_to_use = ImageFont.load_default()
 
-    # Draw letters and grid lines
+    # Draw letters and cell backgrounds/internal lines
     for r in range(nrows):
         for c in range(ncols):
-            char = grid_list[r][c]
-            x0 = c * cell_size
-            y0 = r * cell_size
-            x1 = x0 + cell_size
-            y1 = y0 + cell_size
-
-            # Draw cell borders
-            draw.rectangle([x0, y0, x1, y1], outline='grey')
+            char_to_draw = grid_list[r][c]
+            
+            # Top-left corner of the cell on the canvas (including padding)
+            cell_x0_canvas = c * cell_size + grid_line_padding
+            cell_y0_canvas = r * cell_size + grid_line_padding
+            
+            # Bottom-right corner of the cell on the canvas
+            # cell_x1_canvas = cell_x0_canvas + cell_size
+            # cell_y1_canvas = cell_y0_canvas + cell_size
 
             # Draw letter centered in cell
-            # text_width, text_height = draw.textsize(char, font=font) # Deprecated
-            bbox = draw.textbbox((0,0), char, font=font) # x0, y0, x1, y1
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
-            text_x = x0 + (cell_size - text_width) / 2 - bbox[0] # Adjust for bbox offset
-            text_y = y0 + (cell_size - text_height) / 2 - bbox[1] # Adjust for bbox offset
-            draw.text((text_x, text_y), char, fill='black', font=font)
+            if char_to_draw and char_to_draw.strip(): # Only draw if there's a character
+                try:
+                    # Use textbbox for better centering if available (Pillow 9.2.0+)
+                    bbox = draw.textbbox((0,0), char_to_draw, font=font_to_use, anchor="lt") # Left-Top anchor for bbox calc
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1] # This includes ascender/descender
+                    # For more precise vertical centering, consider font metrics
+                    ascent, descent = font_to_use.getmetrics()
+                    actual_text_visual_height = ascent # Height above baseline for typical cap height
+
+                    text_draw_x = cell_x0_canvas + (cell_size - text_width) / 2
+                    text_draw_y = cell_y0_canvas + (cell_size - actual_text_visual_height) / 2 # Center based on ascent
+                    
+                    draw.text((text_draw_x, text_draw_y), char_to_draw, fill='black', font=font_to_use)
+                except (AttributeError, TypeError): # Fallback for older Pillow or if anchor not supported well
+                    text_width, text_height = draw.textsize(char_to_draw, font=font_to_use) # Deprecated
+                    text_draw_x = cell_x0_canvas + (cell_size - text_width) / 2
+                    text_draw_y = cell_y0_canvas + (cell_size - text_height) / 2
+                    draw.text((text_draw_x, text_draw_y), char_to_draw, fill='black', font=font_to_use)
+
+    # Draw grid lines (horizontal and vertical) AFTER letters to ensure they are on top of any cell bg
+    # Horizontal lines
+    for r in range(nrows + 1):
+        y = r * cell_size + grid_line_padding
+        draw.line([(grid_line_padding, y), (grid_actual_width + grid_line_padding, y)], fill='grey', width=1)
+
+    # Vertical lines
+    for c in range(ncols + 1):
+        x = c * cell_size + grid_line_padding
+        draw.line([(x, grid_line_padding), (x, grid_actual_height + grid_line_padding)], fill='grey', width=1)
 
     return image
 # --- Standard API Routes ---
@@ -568,6 +605,50 @@ def list_items_route():
     except Exception as e:
         logging.error(f"Error retrieving items from database: {e}", exc_info=True)
         return jsonify({'status': 'error', 'message': 'Error retrieving items from library.'}), 500
+
+@app.route('/upload_base_image', methods=['POST'])
+def upload_base_image():
+    logging.info("Received request at /upload_base_image")
+    if 'imageFile' not in request.files:
+        logging.warning("No 'imageFile' part in the request files.")
+        return jsonify({'status': 'error', 'message': 'No image file part in the request'}), 400
+
+    file = request.files['imageFile']
+    if file.filename == '':
+        logging.warning("'imageFile' present but no selected file.")
+        return jsonify({'status': 'error', 'message': 'No selected image file'}), 400
+
+    # Basic file type validation (check MIME type or extension)
+    allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+    file_ext = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
+    if not file_ext or file_ext not in allowed_extensions:
+        logging.warning(f"Disallowed file extension: {file_ext}")
+        return jsonify({'status': 'error', 'message': f'Invalid image format. Allowed: {", ".join(allowed_extensions)}'}), 400
+
+    try:
+        # Generate a unique filename using UUID
+        # Keep original extension for browser compatibility/MIME type detection
+        unique_filename = str(uuid.uuid4()) + '.' + file_ext
+        # Using secure_filename is still good practice to avoid path traversal issues etc.
+        # but we discard its output as we use UUID for uniqueness.
+        _ = secure_filename(file.filename) # Run it for validation side-effects
+        save_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        logging.info(f"Attempting to save uploaded image to: {save_path}")
+
+        file.save(save_path)
+        logging.info(f"Image saved successfully as {unique_filename}")
+
+        image_url = f"/static/uploads/{unique_filename}" # URL path for the frontend
+
+        return jsonify({
+            'status': 'success',
+            'filename': unique_filename,
+            'image_url': image_url
+        })
+
+    except Exception as e:
+        logging.error(f"Error saving uploaded image: {e}", exc_info=True)
+        return jsonify({'status': 'error', 'message': 'Server error during image upload.'}), 500
 
 # --- Generate Routes ---
 @app.route('/generate_true_false', methods=['POST'])
@@ -625,7 +706,7 @@ def generate_text_block_route():
         message = client.messages.create(model=ANTHROPIC_MODEL_NAME, max_tokens=800, temperature=0.7, messages=[{ "role": "user", "content": prompt_content }])
         if message.content and len(message.content) > 0 and hasattr(message.content[0], 'text'): generated_content = message.content[0].text
         else: raise ValueError("Failed to parse content from AI response.")
-        logging.info(f"Generated Text Block length: {len(generated_content)} chars")
+        logging.info(f"TextBlock AI: Generated content for text block: '{generated_content[:200]}...'")
         return jsonify({'status': 'success', 'text_block_content': generated_content.strip()})
     except ValueError as ve: logging.warning(f"Validation Error: {ve}"); return jsonify({'status': 'error', 'message': str(ve)}), 400
     except (anthropic.APIError, httpx.RequestError) as e: return handle_anthropic_error(e)
@@ -874,21 +955,105 @@ Begin JSON list now:"""
 # --- Item/Worksheet Persistence Routes ---
 @app.route('/save_item', methods=['POST'])
 def save_item_route():
+    # --- 1. Log that the function started ---
     logging.info("--- save_item route entered ---")
-    if not request.is_json: logging.error("save_item: Request is not JSON"); return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
-    data = request.get_json(); logging.debug(f"save_item: Received data keys: {list(data.keys())}")
-    item_type = data.get('item_type'); source_topic = data.get('source_topic'); source_url = data.get('source_url'); grade_level = data.get('grade_level'); item_data_json = data.get('item_data_json', None); content_html = data.get('content_html')
-    if not item_type or not grade_level or not content_html: logging.error(f"save_item: Missing required fields. Got type: {item_type}, grade: {grade_level}, content: {bool(content_html)}"); return jsonify({'status': 'error', 'message': 'Missing required fields: item_type, grade_level, content_html'}), 400
-    logging.debug(f"save_item: Preparing to create item: type={item_type}, grade={grade_level}")
-    try:
-        new_item = GeneratedItem(item_type=item_type, source_topic=source_topic, source_url=source_url, grade_level=grade_level, item_data_json=item_data_json, content_html=content_html)
-        logging.debug(f"save_item: GeneratedItem object CREATED: {new_item}")
-        db.session.add(new_item); logging.debug("save_item: Added to session.")
-        db.session.commit(); logging.info(f"save_item: Commit successful. ID assigned: {new_item.id}")
-        response_data = {'status': 'success', 'item_id': new_item.id}; logging.debug(f"save_item: Returning success data: {response_data}")
-        return jsonify(response_data)
-    except Exception as e: db.session.rollback(); logging.error(f"save_item: Exception during DB operation: {e}", exc_info=True); return jsonify({'status': 'error', 'message': f'Database error: {str(e)}'}), 500
 
+    # --- 2. Check if the incoming request is valid JSON ---
+    if not request.is_json:
+        logging.error("save_item: Request is not JSON")
+        return jsonify({'status': 'error', 'message': 'Request must be JSON'}), 400
+
+    # --- 3. Get the data sent from the frontend ---
+    data = request.get_json()
+    logging.debug(f"save_item: Received data keys: {list(data.keys())}")
+
+    # --- 4. Extract all the pieces of data we expect ---
+    item_type = data.get('item_type')
+    source_topic = data.get('source_topic')
+    source_url = data.get('source_url')
+    grade_level = data.get('grade_level')
+    item_data_json = data.get('item_data_json', None) # Get the extra JSON data (like image boxes), default to None if missing
+    content_html = data.get('content_html')
+    existing_item_id = data.get('existing_item_id') # <<<--- Check if the frontend sent an ID for an item it wants to UPDATE
+
+    # --- 5. Make sure we have the essential pieces ---
+    if not item_type or not grade_level or not content_html:
+        logging.error(f"save_item: Missing required fields. Got type: {item_type}, grade: {grade_level}, content: {bool(content_html)}")
+        return jsonify({'status': 'error', 'message': 'Missing required fields: item_type, grade_level, content_html'}), 400
+
+    # --- 6. Prepare variables ---
+    item_to_save = None # This will hold the database item (either found or newly created)
+    is_update = False   # This flag tells us if we are updating or creating
+
+    # --- 7. Try to handle database actions (finding, updating, creating) ---
+    try:
+        # --- 8. Check if an ID for updating was provided ---
+        if existing_item_id:
+            logging.debug(f"save_item: Received potential existing_item_id: {existing_item_id}")
+            try:
+                # --- 9. Try to convert the ID to a number and find the item in the database ---
+                item_id_int = int(existing_item_id)
+                item_to_save = db.session.get(GeneratedItem, item_id_int) # Use db.session.get to find by primary key
+
+                # --- 10. If we found the item, set the flag to true ---
+                if item_to_save:
+                    is_update = True
+                    logging.info(f"save_item: Found existing item ID {item_id_int} for update.")
+                else:
+                    # If ID was sent but not found, log a warning and proceed to create a NEW item instead.
+                    logging.warning(f"save_item: Received existing_item_id {item_id_int}, but item not found in DB. Will create new.")
+            except (ValueError, TypeError):
+                 # If the ID sent wasn't a valid number, log a warning and proceed to create a NEW item.
+                 logging.warning(f"save_item: Invalid existing_item_id format received: {existing_item_id}. Will create new.")
+                 # Let the code fall through to the 'create new' section below
+
+        # --- 11. If the 'is_update' flag is true, update the found item ---
+        if is_update and item_to_save: # Double-check item_to_save exists
+            logging.debug(f"save_item: Updating item ID {item_to_save.id}")
+            # --- 12. Update all the fields of the found item with the new data ---
+            item_to_save.item_type = item_type
+            item_to_save.source_topic = source_topic
+            item_to_save.source_url = source_url
+            item_to_save.grade_level = grade_level
+            item_to_save.item_data_json = item_data_json # Update the extra JSON data too
+            item_to_save.content_html = content_html
+            # The 'last_modified_date' will update automatically because of 'onupdate' in the model definition
+            logging.debug(f"save_item: Item object UPDATED in memory (before commit): {item_to_save}")
+
+        # --- 13. If the 'is_update' flag is false, it means we need to create a new item ---
+        else:
+            logging.debug(f"save_item: Preparing to create NEW item: type={item_type}, grade={grade_level}")
+            # --- 14. Create a new GeneratedItem object with all the data ---
+            item_to_save = GeneratedItem(
+                item_type=item_type,
+                source_topic=source_topic,
+                source_url=source_url,
+                grade_level=grade_level,
+                item_data_json=item_data_json, # Store the extra JSON data
+                content_html=content_html
+                # 'creation_date' and 'last_modified_date' will get default values automatically
+            )
+            logging.debug(f"save_item: GeneratedItem object CREATED: {item_to_save}")
+            # --- 15. Add this new item object to the database session ---
+            db.session.add(item_to_save)
+            logging.debug("save_item: Added NEW item to session.")
+
+        # --- 16. Commit the changes to the database (this saves the update OR the new item) ---
+        db.session.commit()
+        action = "updated" if is_update else "created" # Figure out which word to use in the log message
+        logging.info(f"save_item: Commit successful. Item {action}. ID assigned/confirmed: {item_to_save.id}")
+
+        # --- 17. Send a success response back to the frontend, including the item's ID ---
+        response_data = {'status': 'success', 'item_id': item_to_save.id}
+        logging.debug(f"save_item: Returning success data: {response_data}")
+        return jsonify(response_data)
+
+    # --- 18. If anything went wrong in the 'try' block above... ---
+    except Exception as e:
+        db.session.rollback() # Undo any changes made in this session before the error
+        logging.error(f"save_item: Exception during DB operation: {e}", exc_info=True) # Log the full error
+        # --- 19. Send an error response back to the frontend ---
+        return jsonify({'status': 'error', 'message': f'Database error: {str(e)}'}), 500
 @app.route('/get_item/<int:item_id>', methods=['GET'])
 def get_item_route(item_id):
     logging.info(f"Received request at /get_item/{item_id}")
@@ -939,8 +1104,17 @@ def load_worksheet_route(worksheet_id):
         worksheet = db.session.get(Worksheet, worksheet_id)
         if worksheet is None: return jsonify({'status': 'error', 'message': 'Worksheet not found.'}), 404
         ordered_items = worksheet.items # Relationship handles ordering
-        items_data = [{'id': item.id, 'item_type': item.item_type, 'source_topic': item.source_topic, 'source_url': item.source_url,
-                       'grade_level': item.grade_level, 'content_html': item.content_html} for item in ordered_items]
+        items_data = []
+        for item in ordered_items:
+            items_data.append({
+                'id': item.id,
+                'item_type': item.item_type,
+                'source_topic': item.source_topic,
+                'source_url': item.source_url,
+                'grade_level': item.grade_level,
+                'content_html': item.content_html,
+                'item_data_json': item.item_data_json # <<< ADD THIS LINE
+            })
         logging.info(f"Returning {len(items_data)} items for Worksheet ID: {worksheet_id}")
         return jsonify({'status': 'success', 'worksheet_title': worksheet.title, 'items': items_data})
     except Exception as e: logging.error(f"Error retrieving worksheet {worksheet_id} from database: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Error retrieving worksheet details.'}), 500
@@ -1070,22 +1244,19 @@ def export_worksheet_docx(worksheet_id):
     """Exports a specific worksheet as a DOCX file."""
     logging.info(f"Request: /export/docx/{worksheet_id}")
     try:
-        # Use eager loading to get items efficiently if possible, or default relationship loading
-        # worksheet = Worksheet.query.options(selectinload(Worksheet.items)).get_or_404(worksheet_id) # More advanced
         worksheet = Worksheet.query.get_or_404(worksheet_id)
-        # Access items (SQLAlchemy should handle the ordering defined in the relationship)
-        items = worksheet.items
+        items = worksheet.items # Assumes items are correctly ordered by the relationship
         logging.info(f"Found worksheet '{worksheet.title}' with {len(items)} items.")
 
         document = docx.Document()
         logging.debug("Initialized docx Document.")
 
         # --- Apply Document Formatting ---
-        target_font='Century Gothic'
+        target_font='Century Gothic' # Or 'Arial', 'Calibri' etc.
         try:
             normal_style = document.styles['Normal']
             normal_style.font.name = target_font
-            normal_style.paragraph_format.space_after = Pt(6) # Add some space after paragraphs
+            normal_style.paragraph_format.space_after = Pt(6)
             logging.info(f"Set Normal font to {target_font} and paragraph spacing.")
         except Exception as font_e:
             logging.warning(f"Could not set default font/style: {font_e}")
@@ -1101,148 +1272,118 @@ def export_worksheet_docx(worksheet_id):
 
         try: # Set Margins
             section = document.sections[0]
-            section.left_margin=Inches(0.5); section.right_margin=Inches(0.5)
-            section.top_margin=Inches(0.5); section.bottom_margin=Inches(0.5)
-            logging.info("Set narrow margins.")
+            section.left_margin=Inches(0.75); section.right_margin=Inches(0.75) # Slightly wider than 0.5
+            section.top_margin=Inches(0.75); section.bottom_margin=Inches(0.75)
+            logging.info("Set document margins to 0.75 inches.")
         except Exception as margin_e:
             logging.warning(f"Could not set margins: {margin_e}")
 
-        # --- Add Worksheet Title ---
         document.add_heading(worksheet.title, level=1)
-        document.add_paragraph() # Space after title
+        document.add_paragraph()
         logging.debug(f"Added worksheet title: {worksheet.title}")
 
-        # --- Add Worksheet Items Loop ---
         logging.info("Starting item processing loop...")
         for item_index, item in enumerate(items):
             logging.debug(f"--- Processing item index: {item_index}, ID: {item.id}, Type: {item.item_type} ---")
-            soup = BeautifulSoup(item.content_html, 'lxml') # Use lxml for better parsing
-            processed_as_type = "Unknown" # Initialize tracker
+            soup = BeautifulSoup(item.content_html, 'lxml')
+            processed_as_type = "Unknown"
 
-            # Check for specific structures first
             word_search_container = soup.find('div', class_='word-search-container')
 
-            # --- Condition 1: Word Search ---
             if word_search_container:
                 processed_as_type = "WordSearch"
                 logging.debug("Item identified as Word Search.")
                 try:
-                    # Add Heading (Word Search)
-                    heading_ws = word_search_container.find('h3') # Find first h3
-                    document.add_heading(heading_ws.get_text(strip=True) if heading_ws else "Word Search", level=3)
-                    logging.debug("Added WS Heading")
+                    heading_ws_el = word_search_container.find('h3')
+                    document.add_heading(heading_ws_el.get_text(strip=True) if heading_ws_el else "Word Search", level=3)
 
-                    # Extract grid data
                     grid_table = word_search_container.find('table', class_='word-search-grid')
                     grid_list = []
                     if grid_table:
                         for row in grid_table.find_all('tr'):
                             grid_list.append([cell.get_text(strip=True) for cell in row.find_all('td')])
-                    logging.debug(f"Extracted grid_list with {len(grid_list)} rows.")
-
-                    # Add Grid Image
+                    
                     if grid_list:
-                        grid_image = create_wordsearch_image(grid_list) # Assumes this function exists
+                        grid_image = create_wordsearch_image(grid_list)
                         if grid_image:
                             img_buffer = io.BytesIO(); grid_image.save(img_buffer, format='PNG'); img_buffer.seek(0)
-                            try: document.add_picture(img_buffer, width=Inches(6.0))
+                            try: document.add_picture(img_buffer, width=Inches(6.0)) # Adjust width as needed
                             except Exception as pic_e: logging.error(f"Failed to add picture: {pic_e}"); document.add_paragraph("[Error adding grid image]", style='Comment')
-                            logging.debug("Added word search grid image (or error placeholder).")
                         else: logging.warning("create_wordsearch_image returned None."); document.add_paragraph("[Error generating grid image]", style='Comment')
                     else: logging.warning("Word search grid table not found in HTML."); document.add_paragraph("[Word search grid table not found in HTML]", style='Comment')
 
-                    # Add Word List Heading
-                    all_headings = word_search_container.find_all('h3')
-                    document.add_heading(all_headings[1].get_text(strip=True) if len(all_headings) > 1 else "Word List", level=3)
-
-                    # Add Word List Paragraph
+                    word_list_headings = word_search_container.find_all('h3')
+                    word_list_heading_text = "Word List"
+                    if len(word_list_headings) > 1: # Assumes second H3 is for word list
+                        word_list_heading_text = word_list_headings[1].get_text(strip=True)
+                    document.add_heading(word_list_heading_text, level=3)
+                    
                     word_list_ul = word_search_container.find('ul', class_='word-search-list')
                     words_to_find = [li.get_text(strip=True) for li in word_list_ul.find_all('li')] if word_list_ul else []
-                    words_to_find = [word for word in words_to_find if word] # Filter empty strings
-                    logging.debug(f"Extracted {len(words_to_find)} words for list.")
+                    words_to_find = [word for word in words_to_find if word]
 
                     if words_to_find:
-                        joined_words_string = "     ".join(words_to_find)
-                        document.add_paragraph(joined_words_string)
-                        logging.debug(f"Added joined word list paragraph.")
+                        # Simple paragraph for words, consider columns/table for better formatting later
+                        p_words = document.add_paragraph()
+                        for i, word in enumerate(words_to_find):
+                            p_words.add_run(word)
+                            if i < len(words_to_find) - 1:
+                                p_words.add_run("     ") # Add spacing between words
                     else: document.add_paragraph("[Word list empty or not found in HTML]", style='Comment')
-
-                    document.add_paragraph() # Space after word search item
+                    document.add_paragraph()
                 except Exception as ws_err:
                     logging.error(f"Error processing WordSearch item {item.id}: {ws_err}", exc_info=True)
                     document.add_paragraph(f"[Error processing Word Search item {item.id}]", style='Comment')
 
-            # --- Condition 2: Keywords Table ---
             elif item.item_type.startswith('keywords-'):
                 processed_as_type = "KeywordsTable"
                 logging.debug(f"Processing keywords item {item.id} (Type: {item.item_type}) for DOCX.")
                 try:
-                    soup_kw = BeautifulSoup(item.content_html, 'lxml') # Re-parse just in case soup object was modified
-                    html_table = soup_kw.find('table', class_='keywords-table')
-
+                    html_table = soup.find('table', class_='keywords-table') # soup is already defined
                     if not html_table: raise ValueError("Could not find 'table.keywords-table' in HTML")
-
                     rows = html_table.find_all('tr')
                     if not rows: raise ValueError("Keywords table found but contained no rows.")
-
                     header_cells = rows[0].find_all(['th', 'td'])
                     num_cols = len(header_cells)
                     if num_cols <= 0: raise ValueError("Keywords table found, but header row had no columns.")
-
                     data_rows = rows[1:]
                     num_data_rows = len(data_rows)
 
-                    logging.debug(f"Creating DOCX table with {num_data_rows + 1} rows and {num_cols} cols.")
                     docx_table = document.add_table(rows=num_data_rows + 1, cols=num_cols)
                     docx_table.style = 'Table Grid'
 
-                    # Populate Header
                     for j, cell in enumerate(header_cells):
-                         if j < num_cols:
+                        if j < num_cols:
                             header_text = ' '.join(cell.get_text(strip=True).split())
                             hdr_cell = docx_table.cell(0, j)
                             hdr_cell.text = header_text
                             if hdr_cell.paragraphs and hdr_cell.paragraphs[0].runs: hdr_cell.paragraphs[0].runs[0].font.bold = True
                             elif hdr_cell.paragraphs: hdr_cell.paragraphs[0].add_run().font.bold = True
-
-                    # Populate Data
+                    
                     for i, html_row in enumerate(data_rows):
                         cells = html_row.find_all('td')
                         for j, cell in enumerate(cells):
-                             if j < num_cols:
+                            if j < num_cols:
                                 cell_text = ' '.join(cell.get_text(strip=True).split())
                                 docx_table.cell(i + 1, j).text = cell_text if cell_text else ""
-
-                    # Modify Borders for Matching Type
+                    
                     if item.item_type == 'keywords-matching' and num_cols == 3:
-                        logging.debug(f"Modifying middle column borders for item {item.id}.")
                         middle_col_index = 1
-                        total_rows = num_data_rows + 1
-                        for i in range(total_rows):
+                        total_rows_in_table = num_data_rows + 1
+                        for i_row in range(total_rows_in_table):
                             try:
-                                cell = docx_table.cell(i, middle_col_index)
-                                tcPr = cell._tc.get_or_add_tcPr()
+                                cell_to_modify = docx_table.cell(i_row, middle_col_index)
+                                tcPr = cell_to_modify._tc.get_or_add_tcPr()
                                 tcBorders = tcPr.first_child_found_in("w:tcBorders")
                                 if tcBorders is None: tcBorders = OxmlElement("w:tcBorders"); tcPr.append(tcBorders)
-                                top_border = OxmlElement('w:top'); top_border.set(qn('w:val'), 'nil'); tcBorders.append(top_border)
-                                bottom_border = OxmlElement('w:bottom'); bottom_border.set(qn('w:val'), 'nil'); tcBorders.append(bottom_border)
-                            except IndexError: logging.warning(f"IndexError accessing cell ({i},{middle_col_index}) modifying borders.")
-                            except Exception as border_err: logging.error(f"Error modifying borders cell({i},{middle_col_index}): {border_err}")
-                        logging.debug(f"Finished border removal attempt for item {item.id}.")
-                    elif item.item_type == 'keywords-matching' and num_cols != 3:
-                         logging.warning(f"Keyword matching item {item.id} did not have 3 columns. Borders not modified.")
-
-                    document.add_paragraph() # Space after table
-                    logging.debug(f"Successfully added keywords table for item {item.id} to DOCX.")
-
-                except ValueError as ve: # Catch specific parsing value errors
-                     logging.warning(f"ValueError processing keywords table for item {item.id}: {ve}")
-                     document.add_paragraph(f"[Keyword table content invalid for item {item.id}: {ve}]", style='Comment')
-                except Exception as parse_err: # Catch other unexpected errors
+                                for border_name in ['top', 'bottom']: # Only remove top and bottom
+                                    border_el = OxmlElement(f'w:{border_name}'); border_el.set(qn('w:val'), 'nil'); tcBorders.append(border_el)
+                            except Exception as border_err: logging.error(f"Error modifying borders cell({i_row},{middle_col_index}): {border_err}")
+                    document.add_paragraph()
+                except Exception as parse_err:
                     logging.error(f"Error processing keywords table item {item.id}: {parse_err}", exc_info=True)
                     document.add_paragraph(f"[Error processing keyword table for item {item.id}]", style='Comment')
 
-            # --- Condition 3: Similar Written Questions ---
             elif item.item_type == 'similarWrittenQ':
                 processed_as_type = "SimilarWrittenQ"
                 logging.debug(f"Processing similarWrittenQ item {item.id} for DOCX.")
@@ -1256,111 +1397,244 @@ def export_worksheet_docx(worksheet_id):
                             questions_raw = parsed_data.get('similar_questions', [])
                             if isinstance(questions_raw, list):
                                 questions = [str(q).strip() for q in questions_raw if str(q).strip()]
-                            else: logging.warning(f"similar_questions in JSON for item {item.id} was not a list.")
-                        else: logging.warning(f"Parsed item_data_json for item {item.id} was not a dict.")
                     else: logging.warning(f"item_data_json not found for similarWrittenQ item {item.id}.")
 
-                    # Add content to DOCX
                     document.add_heading("Skills Tested", level=3)
                     document.add_paragraph(skills)
                     document.add_paragraph()
-
                     document.add_heading("Generated Questions", level=3)
                     if questions:
-                        for q_text in questions:
-                            document.add_paragraph(q_text, style='List Number')
-                        p=document.add_paragraph(); r=p.add_run(); r.font.size = Pt(1) # Reset numbering
+                        for q_text in questions: document.add_paragraph(q_text, style='List Number')
+                        p_reset = document.add_paragraph(); p_reset.add_run().font.size = Pt(1)
                     else: document.add_paragraph("[No similar questions found in saved data]", style='Comment')
-
-                    document.add_paragraph() # Spacing after section
-                    logging.debug(f"Successfully added SimilarWrittenQ item {item.id} to DOCX.")
-
-                except json.JSONDecodeError as json_err:
-                     logging.error(f"Failed to parse item_data_json for similarWrittenQ item {item.id}: {json_err}")
-                     document.add_paragraph(f"[Error reading saved data for Similar Written Questions item {item.id}]", style='Comment')
+                    document.add_paragraph()
                 except Exception as export_err:
                     logging.error(f"Error adding similarWrittenQ item {item.id} to DOCX: {export_err}", exc_info=True)
                     document.add_paragraph(f"[Error processing Similar Written Questions item {item.id}]", style='Comment')
-
-            # --- Condition 4: Generic/Fallback Handling ---
-            else:
-                processed_as_type = "Generic"
-                logging.debug("Item identified as Generic type. Parsing content_html.")
+            
+            elif item.item_type == 'imageLabel':
+                processed_as_type = "ImageLabel"
+                logging.debug(f"DOCX Export: Processing imageLabel item ID: {item.id}")
                 try:
-                    # Find top-level elements, excluding head/body/html if present
-                    body = soup.find('body')
-                    if body: content_elements = body.find_all(True, recursive=False)
-                    else: content_elements = soup.find_all(True, recursive=False)
+                    if not item.item_data_json: raise ValueError(f"Missing item_data_json for imageLabel item {item.id}")
+                    data = json.loads(item.item_data_json)
+                    if not isinstance(data, dict) or 'baseImage' not in data: raise ValueError(f"Invalid structure in item_data_json for item {item.id}")
+                    base_image_filename = data['baseImage']
+                    boxes_to_process = data.get('boxes_pct', data.get('boxes')) # Prefer _pct
+                    is_percent_data = 'boxes_pct' in data
+                    
+                    image_path = os.path.join(app.config['UPLOAD_FOLDER'], base_image_filename)
+                    if not os.path.exists(image_path): raise FileNotFoundError(f"Base image file not found: {image_path}")
 
-                    # If still no elements, try getting text
-                    if not content_elements:
-                        plain_text = soup.get_text(strip=True)
-                        if plain_text:
-                             logging.debug("No elements found, adding plain text only.")
-                             document.add_paragraph(plain_text)
-                        else: logging.warning(f"Item ID {item.id} (Generic) has no content elements or text.")
-                    else:
-                        logging.debug(f"Entering loop for {len(content_elements)} generic elements...")
-                        for element in content_elements:
-                            logging.debug(f"  Processing generic element: Name={element.name}, Class={element.get('class',[])}")
-                            if element.name == 'p':
-                                para=document.add_paragraph(); add_runs_from_html_element(para, element)
+                    img = Image.open(image_path).convert("RGB")
+                    draw = ImageDraw.Draw(img)
+                    
+                    calc_ref_width_for_pct = None
+                    calc_ref_height_for_pct = None
+
+                    if is_percent_data: # This 'is_percent_data' was defined earlier based on 'boxes_pct' key presence
+                        calc_ref_width_for_pct = data.get('refEditorWidth')
+                        calc_ref_height_for_pct = data.get('refEditorHeight')
+                        if not calc_ref_width_for_pct or not calc_ref_height_for_pct:
+                            logging.warning(f"DOCX Export: Item {item.id} uses percentages (boxes_pct) but refEditorWidth/Height missing from JSON. "
+                                            f"Falling back to naturalWidth/Height if available, then actual image dimensions. "
+                                            f"This might lead to scaling issues if the original editor view was different from natural size.")
+                            calc_ref_width_for_pct = data.get('naturalWidth', img.width)
+                            calc_ref_height_for_pct = data.get('naturalHeight', img.height)
+                        logging.debug(f"DOCX Export: For item {item.id} (percent data), using reference for % calc: {calc_ref_width_for_pct}x{calc_ref_height_for_pct}. Drawing on image of size: {img.width}x{img.height}")
+                    else: # Old pixel data
+                        # For old pixel data, we assume these pixels were meant for the natural image size,
+                        # or if refEditorWidth was stored, maybe that. This path is less certain for old data.
+                        # This will be the reference against which the old pixel data is scaled to the current image.
+                        calc_ref_width_for_pixels = data.get('refEditorWidth', data.get('naturalWidth', img.width))
+                        calc_ref_height_for_pixels = data.get('refEditorHeight', data.get('naturalHeight', img.height))
+                        logging.debug(f"DOCX Export: For item {item.id} (pixel data), reference dimensions for old pixels: {calc_ref_width_for_pixels}x{calc_ref_height_for_pixels}. Drawing on image of size: {img.width}x{img.height}")
+
+                    font_main, font_small = None, None
+                    try:
+                        font_main = ImageFont.truetype("arial.ttf", 14) # Adjust font size as needed
+                        font_small = ImageFont.truetype("arial.ttf", 10)
+                    except IOError: 
+                        logging.warning("Arial font not found, using default for image labels in DOCX.")
+                        try:
+                            font_main = ImageFont.load_default()
+                            font_small = ImageFont.load_default() # Use same default if specific size fails
+                        except Exception as font_load_err:
+                            logging.error(f"Could not load default PIL font: {font_load_err}")
+                            # font_main and font_small will remain None
+                    
+                    if boxes_to_process and isinstance(boxes_to_process, list):
+                        for box_data in boxes_to_process:
+                            try:
+                                px_x, px_y, px_w, px_h = 0.0, 0.0, 0.0, 0.0 # Pixels to draw on the final 'img'
+
+                                if is_percent_data:
+                                    # Convert percentages to absolute pixel values relative to calc_ref_width_for_pct
+                                    x_abs_on_ref = (float(box_data.get('x_pct', 0)) / 100.0) * calc_ref_width_for_pct
+                                    y_abs_on_ref = (float(box_data.get('y_pct', 0)) / 100.0) * calc_ref_height_for_pct
+                                    w_abs_on_ref = (float(box_data.get('width_pct', 10)) / 100.0) * calc_ref_width_for_pct # Default 10%
+                                    h_abs_on_ref = (float(box_data.get('height_pct', 5)) / 100.0) * calc_ref_height_for_pct  # Default 5%
+                                    
+                                    # Now, these absolute pixel values (calculated on the reference dimensions)
+                                    # need to be scaled if calc_ref_width_for_pct is different from the actual img.width
+                                    # (i.e., if the editor view was scaled relative to the natural image when percentages were saved).
+                                    # We are drawing onto 'img' (the natural-sized image).
+                                    if calc_ref_width_for_pct == 0 or calc_ref_height_for_pct == 0: # Avoid division by zero
+                                        logging.error(f"DOCX Export: calc_ref_width_for_pct or calc_ref_height_for_pct is zero for item {item.id}. Skipping box scaling.")
+                                        px_x, px_y, px_w, px_h = x_abs_on_ref, y_abs_on_ref, w_abs_on_ref, h_abs_on_ref # Use unscaled, might be wrong
+                                    else:
+                                        scale_factor_to_natural_w = img.width / calc_ref_width_for_pct
+                                        scale_factor_to_natural_h = img.height / calc_ref_height_for_pct
+
+                                        px_x = x_abs_on_ref * scale_factor_to_natural_w
+                                        px_y = y_abs_on_ref * scale_factor_to_natural_h
+                                        px_w = w_abs_on_ref * scale_factor_to_natural_w
+                                        px_h = h_abs_on_ref * scale_factor_to_natural_h
+                                else: # Old pixel data (is_percent_data is False)
+                                    # Assume old pixel data was meant to be drawn directly onto an image of 'calc_ref_width_for_pixels'
+                                    # And then scale it to the current natural image size ('img.width', 'img.height').
+                                    x_old_px = float(box_data.get('x', 0))
+                                    y_old_px = float(box_data.get('y', 0))
+                                    w_old_px = float(box_data.get('width', 50))  # Default 50px
+                                    h_old_px = float(box_data.get('height', 30)) # Default 30px
+
+                                    if calc_ref_width_for_pixels == 0 or calc_ref_height_for_pixels == 0:
+                                        logging.error(f"DOCX Export: calc_ref_width_for_pixels or calc_ref_height_for_pixels is zero for item {item.id}. Skipping box scaling for old pixel data.")
+                                        px_x, px_y, px_w, px_h = x_old_px, y_old_px, w_old_px, h_old_px
+                                    else:
+                                        scale_factor_to_natural_w = img.width / calc_ref_width_for_pixels
+                                        scale_factor_to_natural_h = img.height / calc_ref_height_for_pixels
+
+                                        px_x = x_old_px * scale_factor_to_natural_w
+                                        px_y = y_old_px * scale_factor_to_natural_h
+                                        px_w = w_old_px * scale_factor_to_natural_w
+                                        px_h = h_old_px * scale_factor_to_natural_h
+                                
+                                # Draw semi-transparent box
+                                # Ensure width and height are at least 1 pixel for drawing
+                                draw_w = max(1, int(math.ceil(px_w)))
+                                draw_h = max(1, int(math.ceil(px_h)))
+                                rect_img_surface = Image.new('RGBA', (draw_w, draw_h), (255, 255, 255, 0)) # Transparent base
+                                rect_draw_on_surface = ImageDraw.Draw(rect_img_surface)
+                                rect_draw_on_surface.rectangle([(0,0), (draw_w-1, draw_h-1)], outline="black", width=1, fill=(255,255,255,255)) # Semi-transparent white
+                                img.paste(rect_img_surface, (int(px_x), int(px_y)), rect_img_surface) # Paste with alpha blending
+
+                                text_content = str(box_data.get('text', ''))
+                                if box_data.get('type') != 'blank' and text_content:
+                                    font_to_use = font_small if px_h < 25 and font_small else font_main 
+                                    if font_to_use:
+                                        try: 
+                                            center_x = px_x + px_w / 2
+                                            center_y = px_y + px_h / 2
+                                            draw.text((center_x, center_y), text_content, fill="black", font=font_to_use, anchor="mm")
+                                        except (AttributeError, TypeError): 
+                                            text_bbox_fallback = draw.textbbox((0,0), text_content, font=font_to_use)
+                                            text_w_fallback = text_bbox_fallback[2] - text_bbox_fallback[0]
+                                            text_h_fallback = text_bbox_fallback[3] - text_bbox_fallback[1]
+                                            ascent_fb, descent_fb = font_to_use.getmetrics()
+                                            actual_text_visual_height_fb = ascent_fb 
+                                            
+                                            draw_text_x_fallback = px_x + (px_w - text_w_fallback) / 2
+                                            draw_text_y_fallback = px_y + (px_h - actual_text_visual_height_fb) / 2 
+                                            if descent_fb > 0 : # Basic adjustment for descenders if present
+                                                draw_text_y_fallback -= descent_fb / 2 
+                                            draw.text((draw_text_x_fallback, draw_text_y_fallback), text_content, fill="black", font=font_to_use)
+                            except Exception as box_draw_err: 
+                                logging.error(f"Error drawing a specific box/text for imageLabel in DOCX: {box_draw_err}", exc_info=True)
+                    
+                    img_buffer = io.BytesIO(); img.save(img_buffer, format='PNG'); img_buffer.seek(0)
+                    page_width_inches = document.sections[0].page_width.inches - document.sections[0].left_margin.inches - document.sections[0].right_margin.inches
+                    document.add_picture(img_buffer, width=Inches(min(6.5, page_width_inches)))
+                    document.add_paragraph()
+                except Exception as img_label_err:
+                    logging.error(f"DOCX Export: Unexpected error processing imageLabel item {item.id}: {img_label_err}", exc_info=True)
+                    document.add_paragraph(f"[Unexpected Server Error processing Image Labelling item {item.id}. Check server logs.]", style='Comment')
+            
+            else: # Generic handler for other text-based items
+                processed_as_type = "GenericText"
+                logging.debug(f"Processing generic text-based item {item.id} (Type: {item.item_type}) for DOCX.")
+                try:
+                    content_container = soup.find('body') # Or a more specific container if universally present
+                    if content_container:
+                        for element in content_container.children:
+                            if not hasattr(element, 'name') or element.name is None:
+                                if isinstance(element, str) and element.strip():
+                                    document.add_paragraph(element.strip())
+                                continue
+
+                            if element.name == 'h3':
+                                document.add_heading(element.get_text(strip=True), level=3)
+                            elif element.name == 'p':
+                                para = document.add_paragraph()
+                                add_runs_from_html_element(para, element)
                             elif element.name in ['ol', 'ul']:
-                                style = 'List Number' if element.name == 'ol' else 'List Bullet'
-                                list_items = element.find_all('li', recursive=False)
-                                logging.debug(f"    Found list '{element.name}' with {len(list_items)} items.")
-                                for li in list_items:
-                                     para=document.add_paragraph(style=style); add_runs_from_html_element(para, li)
-                                # Attempt numbering reset
-                                p=document.add_paragraph(); r=p.add_run(); r.font.size = Pt(1)
-                                logging.debug("    Added tiny-font paragraph break after list.")
-                            elif element.name == 'h3':
-                                 document.add_heading(element.get_text(strip=True), level=3)
+                                list_style = 'ListNumber' if element.name == 'ol' else 'ListBullet'
+                                for li in element.find_all('li', recursive=False):
+                                    para = document.add_paragraph(style=list_style)
+                                    add_runs_from_html_element(para, li)
+                                p_reset = document.add_paragraph(); p_reset.add_run().font.size = Pt(1) # Reset list numbering
                             elif element.name == 'div' and 'worksheet-section' in element.get('class', []):
-                                 logging.debug("    Processing div.worksheet-section")
-                                 if h:=element.find('h3'): document.add_heading(h.get_text(strip=True), level=3)
-                                 # Process inner elements within the section div
-                                 for inner in element.find_all(['p','ol','ul'], recursive=False):
-                                      logging.debug(f"      Processing inner element: {inner.name}")
-                                      if inner.name == 'p': para=document.add_paragraph(); add_runs_from_html_element(para, inner)
-                                      elif inner.name in ['ol', 'ul']:
-                                           p=document.add_paragraph(); r=p.add_run(); r.font.size = Pt(1) # Reset attempt
-                                           style = 'List Number' if inner.name == 'ol' else 'List Bullet'
-                                           inner_list_items = inner.find_all('li', recursive=False)
-                                           logging.debug(f"        Found inner list '{inner.name}' with {len(inner_list_items)} items.")
-                                           for li in inner_list_items: para=document.add_paragraph(style=style); add_runs_from_html_element(para, li)
-                            # Handle potential top-level text nodes if needed (less common)
-                            # elif element.name is None and element.string and element.string.strip():
-                            #     document.add_paragraph(element.string.strip())
-                            else:
-                                 logging.debug(f"    Ignoring generic element: Name={element.name}")
-                        logging.debug("  Finished loop for generic elements.")
+                                section_title_el = element.find('h3', recursive=False)
+                                if section_title_el:
+                                    document.add_heading(section_title_el.get_text(strip=True), level=3)
+                                    section_title_el.decompose() # Avoid re-processing
+
+                                for child_el in element.children: # Process children of worksheet-section
+                                    if not hasattr(child_el, 'name') or child_el.name is None:
+                                        if isinstance(child_el, str) and child_el.strip(): document.add_paragraph(child_el.strip())
+                                        continue
+                                    if child_el.name == 'p':
+                                        para = document.add_paragraph(); add_runs_from_html_element(para, child_el)
+                                    elif child_el.name in ['ol', 'ul']:
+                                        child_list_style = 'ListNumber' if child_el.name == 'ol' else 'ListBullet'
+                                        for li_child in child_el.find_all('li', recursive=False):
+                                            para = document.add_paragraph(style=child_list_style); add_runs_from_html_element(para, li_child)
+                                        p_reset_child = document.add_paragraph(); p_reset_child.add_run().font.size = Pt(1)
+                                    elif child_el.name == 'div': # E.g., answer key divs
+                                        # Check for specific IDs for more targeted formatting if needed
+                                        # Example: if child_el.get('id') == 'gap-fill-answers': ...
+                                        div_text_content = child_el.get_text(separator='\n', strip=True)
+                                        if div_text_content: document.add_paragraph(div_text_content)
+                            # Add more specific handlers for other common HTML structures here
+                        document.add_paragraph() # Space after generic item
+                    else:
+                        logging.warning(f"Could not find content container for generic item {item.id}")
+                        document.add_paragraph(f"[Content for item {item.id} (type: {item.item_type}) could not be extracted.]", style='Comment')
                 except Exception as generic_err:
-                     logging.error(f"Error processing generic item {item.id}: {generic_err}", exc_info=True)
-                     document.add_paragraph(f"[Error processing content for item {item.id}]", style='Comment')
+                    logging.error(f"Error processing generic text-based item {item.id}: {generic_err}", exc_info=True)
+                    document.add_paragraph(f"[Error processing item {item.id} (type: {item.item_type})]", style='Comment')
 
-            # --- End of the main if/elif/else block for item types ---
             logging.debug(f"End processing item index {item_index}. Identified as: {processed_as_type}")
+            if item_index < len(items) - 1: # If it's not the last item
+                # Add a page break only before large visual items if the current item wasn't also one
+                # or if the next item is a major section.
+                # For now, simpler: page break before WordSearch or ImageLabel if they aren't first.
+                next_item_is_visual = items[item_index + 1].item_type in ['wordSearch', 'imageLabel']
+                current_item_is_visual = item.item_type in ['wordSearch', 'imageLabel']
 
-            # --- Add separator BETWEEN items ---
-            if item_index < len(items) - 1:
-                logging.debug(f"Adding separator after item index {item_index}")
-                # Use a more subtle separator? Like a paragraph break or horizontal rule if supported well
-                document.add_paragraph().add_run().add_break(docx.enum.text.WD_BREAK.PAGE) # Or just PAGE break
-                # document.add_paragraph("---") # Simple separator
-                document.add_paragraph()
+                if next_item_is_visual and item_index > -1 : # Always page break before a visual item unless it's the very first
+                    logging.debug(f"Adding PAGE BREAK before next visual item: {items[item_index + 1].item_type}")
+                    document.add_page_break()
+                elif not current_item_is_visual and not next_item_is_visual: 
+                    # If both current and next are text-based, add a smaller separator
+                    logging.debug(f"Adding paragraph separator after text item: {item.item_type}")
+                    sep_para = document.add_paragraph()
+                    # You can add a run with '***' or a few empty runs, or just rely on paragraph spacing.
+                    # sep_para.add_run("-----").font.size = Pt(8) 
+                    # sep_para.alignment = docx.enum.text.WD_ALIGN_PARAGRAPH.CENTER
+                    document.add_paragraph() # Just an empty paragraph for spacing
+                else:
+                    # If current is visual and next is text, or vice-versa and not covered above,
+                    # default to a paragraph break.
+                    logging.debug(f"Adding default paragraph separator between {item.item_type} and {items[item_index + 1].item_type}")
+                    document.add_paragraph()
 
-        # --- End of main item loop ---
         logging.info("Finished item processing loop.")
-
-        # --- Save and Return File ---
-        logging.debug("Saving document to buffer...")
         file_stream = io.BytesIO()
         document.save(file_stream)
         file_stream.seek(0)
-        # Sanitize title for filename
-        safe_title = re.sub(r'[\\/*?:"<>|]', "", worksheet.title) # Remove invalid chars
-        safe_title = re.sub(r'\s+', '_', safe_title) # Replace whitespace with underscore
+        safe_title = re.sub(r'[\\/*?:"<>|]', "", worksheet.title)
+        safe_title = re.sub(r'\s+', '_', safe_title).strip('_')
         filename = f"{safe_title.lower() or 'worksheet'}.docx"
         logging.info(f"Sending DOCX file: {filename}")
         return send_file(
@@ -1369,25 +1643,44 @@ def export_worksheet_docx(worksheet_id):
             download_name=filename,
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         )
-
     except Exception as e:
         logging.error(f"CRITICAL Error exporting DOCX for worksheet {worksheet_id}", exc_info=True)
-        # Return a user-friendly error page or message in production
-        # For debugging, returning the error might be useful
         return f"Error exporting worksheet: {str(e)}<br><pre>{traceback.format_exc()}</pre>", 500
 
-# --- Helper function add_runs_from_html_element remains the same ---
-# def add_runs_from_html_element(paragraph, element):
-#    ... (keep the previous version) ...500
-
+# --- Helper function add_runs_from_html_element ---
 def add_runs_from_html_element(paragraph, element):
     """Adds formatted runs to a python-docx paragraph based on basic HTML tags."""
     for content in element.contents:
-        if isinstance(content, str): paragraph.add_run(content.replace('\xa0', ' '))
-        elif content.name in ['strong', 'b']: r=paragraph.add_run(content.get_text(strip=True).replace('\xa0', ' ')); r.bold = True
-        elif content.name in ['em', 'i']: r=paragraph.add_run(content.get_text(strip=True).replace('\xa0', ' ')); r.italic = True
-        elif content.name == 'span' and 'gap-placeholder' in content.get('class', []): paragraph.add_run(" [__________] ")
-        elif content.name == 'br': paragraph.add_run("\n")
+        if isinstance(content, str):
+            text_content_original = content 
+            text_content_for_display = content.replace('\xa0', ' ') 
+
+            stripped_text = text_content_original.strip()
+            is_just_underscores = False
+            if len(stripped_text) > 1 and all(char == '_' for char in stripped_text): 
+                is_just_underscores = True
+            
+            if is_just_underscores:
+                paragraph.add_run(" " + "_" * 30 + " ") # Make the gap 30 underscores long
+            else:
+                text_to_add_final = text_content_for_display.strip()
+                if text_to_add_final:
+                    paragraph.add_run(text_to_add_final)
+        elif content.name in ['strong', 'b']:
+            run = paragraph.add_run(content.get_text(strip=True).replace('\xa0', ' '))
+            run.bold = True
+        elif content.name in ['em', 'i']:
+            run = paragraph.add_run(content.get_text(strip=True).replace('\xa0', ' '))
+            run.italic = True
+        elif content.name == 'span' and 'gap-placeholder' in content.get('class', []): 
+            # This will now only be hit if you explicitly use <span class="gap-placeholder"> for some gaps
+            paragraph.add_run(" [____________________] ") # Keep it long here too
+        elif content.name == 'br':
+            paragraph.add_run().add_break() 
+        elif hasattr(content, 'name') and content.name: 
+            nested_text = content.get_text(strip=True).replace('\xa0', ' ')
+            if nested_text:
+                paragraph.add_run(nested_text)
 
 @app.route('/')
 def serve_index():
