@@ -57,7 +57,9 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024 # Example: 16MB upload limit
 # --- End Upload Folder Configuration ---
 # Initialize the SQLAlchemy extension
 db = SQLAlchemy(app)
-
+with app.app_context():
+    db.create_all()
+    logging.info("Database tables checked/created (if they didn't exist).")
 # --- Database Model Definitions ---
 
 # Association Table: Links Worksheets and GeneratedItems, storing order
@@ -1690,5 +1692,5 @@ def serve_index():
 
 # --- Run the App ---
 if __name__ == '__main__':
-    # Note: debug=True is useful locally but should be False in production
-    app.run(host='127.0.0.1', port=5001, debug=True)
+    # db.create_all() is now handled when the app initializes globally
+    app.run(debug=True, port=5001)
